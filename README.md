@@ -116,3 +116,4 @@ el-gladiador/liquid-glass-react.
 `0.1.0` — architecture scaffold. The next milestone is a working WebGL2 renderer
 and DOM-capture path in Chromium, followed by Safari/Firefox verification and
 adaptive-quality benchmarking.
+# universal-liquid-glass
