@@ -1,0 +1,96 @@
+export const VERTEX_SHADER = `#version 300 es
+precision highp float;
+in vec2 a_position;
+uniform vec4 u_rect;
+uniform vec2 u_viewport;
+out vec2 v_uv;
+out vec2 v_local;
+void main() {
+  vec2 unit = a_position * 0.5 + 0.5;
+  vec2 pixel = u_rect.xy + unit * u_rect.zw;
+  vec2 clip = pixel / u_viewport * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_uv = pixel / u_viewport;
+  v_local = (unit - 0.5) * u_rect.zw;
+}`;
+
+export const FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+in vec2 v_local;
+out vec4 outColor;
+uniform sampler2D u_backdrop;
+uniform vec2 u_viewport;
+uniform vec2 u_textureSize;
+uniform vec4 u_rect;
+uniform float u_radius;
+uniform float u_refraction;
+uniform float u_blur;
+uniform float u_chromatic;
+uniform float u_tintOpacity;
+uniform vec3 u_tint;
+uniform float u_sampleTier;
+
+float roundedBox(vec2 point, vec2 halfSize, float radius) {
+  vec2 q = abs(point) - halfSize + radius;
+  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+vec3 backdrop(vec2 uv, vec2 delta) {
+  vec3 color = texture(u_backdrop, clamp(uv, 0.0, 1.0)).rgb * 0.28;
+  color += texture(u_backdrop, clamp(uv + vec2(delta.x, 0.0), 0.0, 1.0)).rgb * 0.12;
+  color += texture(u_backdrop, clamp(uv - vec2(delta.x, 0.0), 0.0, 1.0)).rgb * 0.12;
+  color += texture(u_backdrop, clamp(uv + vec2(0.0, delta.y), 0.0, 1.0)).rgb * 0.12;
+  color += texture(u_backdrop, clamp(uv - vec2(0.0, delta.y), 0.0, 1.0)).rgb * 0.12;
+  if (u_sampleTier > 0.4) {
+    color += texture(u_backdrop, clamp(uv + delta, 0.0, 1.0)).rgb * 0.06;
+    color += texture(u_backdrop, clamp(uv - delta, 0.0, 1.0)).rgb * 0.06;
+    color += texture(u_backdrop, clamp(uv + vec2(delta.x, -delta.y), 0.0, 1.0)).rgb * 0.06;
+    color += texture(u_backdrop, clamp(uv + vec2(-delta.x, delta.y), 0.0, 1.0)).rgb * 0.06;
+  } else { color /= 0.76; }
+  if (u_sampleTier > 0.8) {
+    vec2 wide = delta * 1.8;
+    color = color * 0.88
+      + texture(u_backdrop, clamp(uv + wide, 0.0, 1.0)).rgb * 0.03
+      + texture(u_backdrop, clamp(uv - wide, 0.0, 1.0)).rgb * 0.03
+      + texture(u_backdrop, clamp(uv + vec2(wide.x, -wide.y), 0.0, 1.0)).rgb * 0.03
+      + texture(u_backdrop, clamp(uv + vec2(-wide.x, wide.y), 0.0, 1.0)).rgb * 0.03;
+  }
+  return color;
+}
+void main() {
+  vec2 halfSize = u_rect.zw * 0.5;
+  float radius = clamp(u_radius, 0.0, min(halfSize.x, halfSize.y));
+  float signedDistance = roundedBox(v_local, halfSize, radius);
+  float antialias = max(fwidth(signedDistance), 0.75);
+  float alpha = 1.0 - smoothstep(-antialias, antialias, signedDistance);
+  if (alpha <= 0.001) discard;
+  float depth = max(-signedDistance, 0.0);
+  float edgeWidth = max(10.0, min(halfSize.x, halfSize.y) * 0.72);
+  float edge = 1.0 - smoothstep(0.0, edgeWidth, depth);
+  float lip = exp(-depth * 0.23);
+  float epsilon = 1.0;
+  vec2 gradient = vec2(
+    roundedBox(v_local + vec2(epsilon, 0.0), halfSize, radius) - roundedBox(v_local - vec2(epsilon, 0.0), halfSize, radius),
+    roundedBox(v_local + vec2(0.0, epsilon), halfSize, radius) - roundedBox(v_local - vec2(0.0, epsilon), halfSize, radius));
+  vec2 radial = v_local / max(halfSize, vec2(1.0));
+  vec2 normal = length(gradient) > 0.001 ? normalize(gradient) : normalize(radial + vec2(0.0001));
+  vec2 lensDirection = normalize(mix(radial, normal, smoothstep(0.25, 0.9, edge)) + vec2(0.0001));
+  float lensPixels = u_refraction * min(u_rect.z, u_rect.w) * (0.035 + edge * 0.13 + lip * 0.055);
+  vec2 offset = -lensDirection * lensPixels / u_viewport;
+  vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0))) * max(u_blur, 0.65);
+  vec3 color = backdrop(v_uv + offset, blurStep);
+  if (u_chromatic > 0.001) {
+    vec2 split = lensDirection * edge * u_chromatic * 1.8 / u_viewport;
+    vec3 redSample = texture(u_backdrop, clamp(v_uv + offset + split, 0.0, 1.0)).rgb;
+    vec3 blueSample = texture(u_backdrop, clamp(v_uv + offset - split, 0.0, 1.0)).rgb;
+    color.r = mix(color.r, redSample.r, 0.34);
+    color.b = mix(color.b, blueSample.b, 0.34);
+  }
+  float fresnel = pow(clamp(edge, 0.0, 1.0), 3.0);
+  float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 5.0);
+  float specular = directional * smoothstep(10.0, 1.0, depth) * 0.34;
+  color = mix(color, u_tint, u_tintOpacity);
+  color += vec3(fresnel * 0.075 + specular);
+  color -= vec3(max(dot(normal, normalize(vec2(0.55, 0.83))), 0.0) * lip * 0.035);
+  outColor = vec4(color * alpha, alpha);
+}`;

@@ -1,11 +1,20 @@
-This project is a new implementation informed by public research and permissively
-licensed open-source work. Before copying source code from any upstream project,
-preserve all notices required by that project's license.
+Universal Liquid Glass is an original implementation informed by source review of
+the following open-source projects. No source was copied from archisvaze/liquid-glass,
+which did not include a license file at the inspected revision.
 
-Reference implementations currently being evaluated:
-- Hla-aung/liquid-glass (MIT): WebGL2/Three.js shared renderer, DOM capture,
-  Snell's-law-inspired optical model, lens profiles, Fresnel/specular treatment.
-- el-gladiador/liquid-glass-react (MIT): shared WebGL2 context, multi-layer
-  refraction, Gaussian blur, capture invalidation/cooldown, off-screen pausing.
-- archisvaze/liquid-glass: useful visual/WebGL reference; do not copy source until
-  its license is independently verified.
+Hla-aung/liquid-glass — https://github.com/Hla-aung/liquid-glass
+MIT License, Copyright (c) 2026 Htet Lin Aung
+
+el-gladiador/liquid-glass-react — https://github.com/el-gladiador/liquid-glass-react
+MIT License, Copyright (c) 2026 Zaki
+
+StarKnightt/liquid-glass — https://github.com/StarKnightt/liquid-glass
+MIT License, Copyright (c) 2026 Prasenjit (StarKnightt)
+
+lucaperullo/simple-liquid-glass — https://github.com/lucaperullo/simple-liquid-glass
+MIT License, Copyright (c) 2025 lucaperullo
+
+Each MIT-licensed work permits use, modification, distribution, sublicensing,
+and sale provided its copyright and permission notice are included. The full MIT
+permission and warranty disclaimer applying to this distribution is reproduced
+in LICENSE.

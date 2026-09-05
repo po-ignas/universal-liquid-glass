@@ -1,119 +1,114 @@
 # Universal Liquid Glass
 
-A small, performance-first Liquid Glass engine for the web.
+A small React/Next.js library that renders visibly refractive, Apple-like glass over ordinary DOM content. It is optimized for a few high-value navigation surfaces: desktop headers, mobile headers, and fixed mobile navigation.
 
-The goal is not to reproduce Apple's private compositor APIs. The goal is to
-produce a convincing refractive glass material across Chromium, Safari and
-Firefox using WebGL2, while keeping normal HTML/React content accessible and
-keeping page speed more important than the visual effect.
+The WebGL2 layer bends a client-side snapshot of the real page with a curved rounded-rectangle lens, edge refraction, scattering, Fresnel-like rim light, directional specular light, tint, and restrained chromatic aberration. Text, buttons, links, focus behavior, and pointer interaction remain normal HTML above it.
 
-## Initial scope
+## Install
 
-This package is intentionally narrow:
+This is a development release and is not published to npm. Install from the repository after pushing the desired commit:
 
-- desktop header
-- mobile header
-- mobile footer
-- one shared WebGL2 renderer
-- DOM backdrop capture rather than server-side rendering
-- normal DOM children above the visual glass layer
-- adaptive quality based on real browser performance
-- CSS fallback when WebGL2 is unavailable or too expensive
-
-It is **not** intended to put refractive glass on hundreds of cards or to become
-a general page renderer.
-
-## Architecture
-
-```text
-Normal DOM / React page
-        |
-        +--> selective DOM capture --> shared background texture
-                                      |
-GlassSurface registry ----------------+
-                                      v
-                           one WebGL2 renderer
-                                      |
-                           refractive glass regions
-                                      |
-                         normal HTML children above
+```bash
+npm install github:po-ignas/universal-liquid-glass
 ```
 
-The runtime should spend performance budget only where glass is visible.
+For local integration on this machine:
 
-## Performance rules
+```bash
+npm install /Users/vacuum/Desktop/universal-liquid-glass
+```
 
-1. Page responsiveness wins over glass quality.
-2. Never create one WebGL context per glass element.
-3. Never recapture the DOM every animation frame.
-4. Coalesce scroll/resize/mutation invalidations.
-5. Reduce capture resolution while moving; perform a cleaner capture when idle.
-6. Pause work when glass is off-screen or hidden by the active responsive layout.
-7. Use measured frame/capture performance rather than exact device-model detection.
-8. Fall back gracefully instead of allowing glass to degrade scrolling.
+The package runs its TypeScript build during Git/local installation. React 18 or newer is a peer dependency.
 
-### Planned quality tiers
-
-| Tier | Capture scale | Capture cadence | Shader | Behavior |
-|---|---:|---:|---|---|
-| High | ~0.7-0.75 | responsive | full | strongest optics |
-| Medium | ~0.5 | throttled | full/normal | default starting point |
-| Low | ~0.35 | heavily throttled | reduced | protects interaction |
-| Fallback | n/a | none | CSS | no WebGL2 / sustained poor performance |
-
-The exact thresholds must be benchmarked rather than treated as fixed truths.
-
-## Public API target
+## React / Next.js
 
 ```tsx
-<GlassProvider>
-  <GlassSurface preset="navigation">
-    <button>Menu</button>
-  </GlassSurface>
-</GlassProvider>
+import { GlassProvider, GlassSurface } from "@po-ignas/universal-liquid-glass";
+
+export default function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <GlassProvider>
+      <GlassSurface className="desktop-header"><Header /></GlassSurface>
+      {children}
+      <GlassSurface className="mobile-footer"><MobileNavigation /></GlassSurface>
+    </GlassProvider>
+  );
+}
 ```
 
-For the original application, the first consumers are expected to be:
+Both components are marked `"use client"`, so they can be imported from a Next.js App Router tree. Mount one provider around the page area that supplies the backdrop. Do not nest a provider per surface.
+
+The intentionally small surface API accepts normal `div` props plus `borderRadius`, `refraction` (default `1`; tuned range `0–2`), `blur`, `chromaticAberration` (`0–1`), `tint`, and `tintOpacity`. `GlassProvider` accepts `debug`, `initialQuality`, `maxDpr`, and `mutationDebounceMs`. Debug mode is off by default.
+
+## Run the demo
+
+```bash
+npm install
+npm run demo
+```
+
+Open `http://127.0.0.1:5173/?debug=1`. The page deliberately puts high-contrast type, rules, gradients, and cards behind fixed desktop/mobile navigation so real displacement is distinguishable from transparent blur.
+
+## How it works
 
 ```text
-DesktopHeaderGlass
-MobileHeaderGlass
-MobileFooterGlass
+ordinary DOM page
+      ↓ occasional viewport capture (html2canvas-pro)
+one reusable background texture
+      ↓
+one fixed WebGL2 canvas + one program + one quad buffer
+      ↓ one draw per visible registered region
+desktop header / mobile header / mobile footer
+      ↑
+accessible DOM content remains above the visual layer
 ```
 
-## What belongs here
+The renderer captures only the viewport, not an arbitrarily tall document. Captures exclude the renderer, glass surfaces, and debug UI. Texture storage is reused with `texSubImage2D` whenever dimensions do not change. The render loop sleeps when nothing is dirty.
 
-Generic engineering that can be reused between projects:
+Scroll events are passive. While scrolling, captures use a lower temporary scale and a longer throttle; 150 ms after scrolling settles, the renderer requests a final tier-quality snapshot. Resize and mutation bursts are coalesced. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
 
-- WebGL renderer
-- shaders / optics
-- DOM capture manager
-- surface registry
-- adaptive quality controller
-- React provider/surface wrappers
-- browser fallback behavior
+## Adaptive performance
 
-What does **not** belong here:
+Responsiveness wins over fidelity. Capability hints only seed the starting tier; measured frame and capture time use hysteresis to degrade in this order:
 
-- business logic
-- application navigation definitions
-- customer data
-- project-specific branding/content
-- database/API code
+| Tier | Capture scale | Minimum cadence | Shader work | Canvas DPR cap |
+|---|---:|---:|---|---:|
+| High | 0.75× | 70 ms | 13 blur taps + chromatic split | 2× |
+| Medium | 0.50× | 120 ms | 9 blur taps + chromatic split | 1.75× |
+| Low | 0.35× | 220 ms | 5 blur taps, no chromatic split | 1.25× |
+| Fallback | none | none | CSS blur/tint | 1× |
 
-## Source strategy
+During active scrolling the current capture scale is multiplied by `0.72`. Two sustained stressed samples normally lower a tier; LOW requires three stressed samples before CSS fallback. Recovery is deliberately slower (eight comfortable samples).
 
-We are intentionally not installing two full Liquid Glass libraries and stacking
-them together. We use proven implementations as references, then keep one small
-runtime whose architecture is appropriate for navigation surfaces.
+## Browser support
 
-Before porting code, verify and preserve the upstream license/notice. Current
-MIT-licensed references include Hla-aung/liquid-glass and
-el-gladiador/liquid-glass-react.
+- Chromium/Chrome: primary WebGL2 path; intended acceptance browser.
+- Safari 15+: WebGL2 path where context creation and DOM capture succeed.
+- Firefox 51+: WebGL2 path where context creation and DOM capture succeed.
+- WebGL2 loss/unavailability or sustained unacceptable capture/frame cost: CSS translucent blur fallback.
+- Reduced-motion preference starts at LOW. It does not disable refraction because the effect is static when idle.
 
-## Status
+The runtime contains no browser-specific SVG-filter refraction. That avoids Chromium-only `backdrop-filter: url(...)` behavior.
 
-`0.1.0` — architecture scaffold. The next milestone is a working WebGL2 renderer
-and DOM-capture path in Chromium, followed by Safari/Firefox verification and
-adaptive-quality benchmarking.
-# universal-liquid-glass
+## Known limitations
+
+- DOM rasterization is not a browser compositor API. Video frames, WebGL/canvas content, cross-origin images without CORS, iframes, complex filters, and some advanced CSS may be absent or stale in snapshots.
+- Scrolling uses throttled snapshots, so fast motion can briefly show an older refracted background. This is intentional; the final settled capture corrects it.
+- The shared canvas occupies z-index `1000` inside the provider isolation context and surfaces default to `1001`. Application overlays should establish a higher layer deliberately.
+- Glass surfaces should not sit inside transformed ancestors; transforms change fixed-position and stacking behavior in browsers.
+- One provider is designed for a handful of navigation surfaces, not hundreds of cards.
+- Client-side route systems that do not emit `popstate` should call `invalidate()` after navigation.
+
+## Verification
+
+```bash
+npm run typecheck
+npm test
+npm run demo:build
+```
+
+The debug overlay reports mode, active tier, recent frame timing/FPS, last capture duration, effective capture scale, capture count, surface count, and texture dimensions. See [BENCHMARK.md](./BENCHMARK.md) for the benchmark procedure and current environment status.
+
+## Attribution
+
+The implementation is original but informed by permissively licensed work from `Hla-aung/liquid-glass`, `el-gladiador/liquid-glass-react`, `StarKnightt/liquid-glass`, and `lucaperullo/simple-liquid-glass`. `archisvaze/liquid-glass` was inspected only; it had no license file and no source was copied. Details are in [RESEARCH.md](./RESEARCH.md) and [NOTICE](./NOTICE).

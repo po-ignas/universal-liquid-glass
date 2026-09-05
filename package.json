@@ -12,11 +12,20 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "demo": "vite --host 127.0.0.1",
+    "demo:build": "vite build",
+    "prepare": "npm run build",
+    "clean": "rm -rf dist demo-dist"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -26,10 +35,35 @@
     "html2canvas-pro": "^1.5.11"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.2",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "typescript": "^5.9.0"
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.4"
   },
-  "keywords": ["liquid-glass", "webgl2", "react", "refraction", "glass", "ios", "shader"],
-  "license": "MIT"
+  "keywords": [
+    "liquid-glass",
+    "webgl2",
+    "react",
+    "refraction",
+    "glass",
+    "ios",
+    "shader"
+  ],
+  "license": "MIT",
+  "directories": {
+    "example": "examples",
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/po-ignas/universal-liquid-glass.git"
+  },
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/po-ignas/universal-liquid-glass/issues"
+  },
+  "homepage": "https://github.com/po-ignas/universal-liquid-glass#readme"
 }
