@@ -1,0 +1,35 @@
+{
+  "name": "@po-ignas/universal-liquid-glass",
+  "version": "0.1.0",
+  "description": "Cross-browser WebGL2 liquid glass for high-value navigation surfaces, with shared DOM capture and adaptive performance.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "html2canvas-pro": "^1.5.11"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.9.0"
+  },
+  "keywords": ["liquid-glass", "webgl2", "react", "refraction", "glass", "ios", "shader"],
+  "license": "MIT"
+}
