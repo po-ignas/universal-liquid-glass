@@ -65,7 +65,9 @@ accessible DOM content remains above the visual layer
 
 The renderer captures only the viewport, not an arbitrarily tall document. Captures exclude the renderer, glass surfaces, and debug UI. Texture storage is reused with `texSubImage2D` whenever dimensions do not change. The render loop sleeps when nothing is dirty.
 
-Scroll events are passive and start no DOM captures. During scrolling, settling, and the post-scroll capture, surfaces use lightweight CSS glass and the stale WebGL canvas stays hidden. Roughly 140 ms after scrolling settles, one coalesced capture refreshes the shared texture. Viewport and texture generations prevent an obsolete asynchronous result from becoming visible; WebGL returns only after the current generation uploads and draws successfully. Resize and mutation bursts use the same freshness contract. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
+Scroll events are passive and start no DOM captures. During scrolling, settling, and the post-scroll capture, surfaces use lightweight CSS glass calibrated to the tuned shader's calm center; the stale WebGL canvas is hidden immediately so the two presentations do not compound into a visibly foggier state. Roughly 140 ms after scrolling settles, one coalesced capture refreshes the shared texture and WebGL fades back in. Viewport and texture generations prevent an obsolete asynchronous result from becoming visible; WebGL returns only after the current generation uploads and draws successfully. Resize and mutation bursts use the same freshness contract. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
+
+The default optical profile adapts to each surface's thickness and aspect ratio. Shallow header/footer pills receive a thin-lens treatment: the center transmits a recognizable, gently scattered backdrop while displacement, chromatic separation, and stronger scattering are concentrated toward the curved rim. Larger surfaces may retain a deeper profile. This adaptation is internal; the existing `refraction`, `blur`, tint, and chromatic controls remain the public API.
 
 ## Adaptive performance
 
@@ -107,7 +109,7 @@ npm test
 npm run demo:build
 ```
 
-The debug overlay reports mode, active tier, interaction/capture state, viewport/texture/capture generations, texture freshness, WebGL visibility, frame timing/FPS, capture duration/count, surface geometry, and texture dimensions. See [BENCHMARK.md](./BENCHMARK.md) for the benchmark procedure and current environment status.
+The debug overlay reports mode, active tier, interaction/capture state, viewport/texture/capture generations, texture freshness, WebGL visibility, frame timing/FPS, capture duration/count, surface geometry, and texture dimensions. Its `sample`, `exaggerated`, and `edge-mask` views isolate coordinate alignment, strong displacement, and the spatial refraction profile. See [BENCHMARK.md](./BENCHMARK.md) for the benchmark procedure and current environment status.
 
 ## Attribution
 

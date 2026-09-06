@@ -78,29 +78,47 @@ void main() {
     return;
   }
   float depth = max(-signedDistance, 0.0);
-  float edgeWidth = max(10.0, min(halfSize.x, halfSize.y) * 0.72);
-  float edge = 1.0 - smoothstep(0.0, edgeWidth, depth);
-  float lip = exp(-depth * 0.23);
+  // Wide, shallow navigation surfaces need a thinner optical profile than panels.
+  float thickness = min(u_rect.z, u_rect.w);
+  float aspectRatio = max(u_rect.z, u_rect.w) / max(thickness, 1.0);
+  float normalizedThickness = clamp(thickness / 96.0, 0.5, 1.0);
+  float shallowSurface = smoothstep(2.5, 7.5, aspectRatio);
+  float opticalProfile = normalizedThickness * mix(1.0, 0.58, shallowSurface);
+  float edgeWidth = clamp(thickness * mix(0.21, 0.30, opticalProfile), 7.0, 22.0);
+  float edgeBase = 1.0 - smoothstep(0.0, edgeWidth, depth);
+  float edge = pow(clamp(edgeBase, 0.0, 1.0), 2.0);
+  float lipWidth = clamp(thickness * 0.06, 1.5, 5.0);
+  float lip = exp(-depth / lipWidth);
+  float refractionStrength = opticalProfile * clamp(edge * 0.78 + lip * 0.22, 0.0, 1.0);
+  if (u_debugMode > 2.5) {
+    outColor = vec4(vec3(refractionStrength) * alpha, alpha);
+    return;
+  }
   float epsilon = 1.0;
   vec2 gradient = vec2(
     roundedBox(v_local + vec2(epsilon, 0.0), halfSize, radius) - roundedBox(v_local - vec2(epsilon, 0.0), halfSize, radius),
     roundedBox(v_local + vec2(0.0, epsilon), halfSize, radius) - roundedBox(v_local - vec2(0.0, epsilon), halfSize, radius));
   vec2 radial = v_local / max(halfSize, vec2(1.0));
   vec2 normal = length(gradient) > 0.001 ? normalize(gradient) : normalize(radial + vec2(0.0001));
-  vec2 lensDirection = normalize(mix(radial, normal, smoothstep(0.25, 0.9, edge)) + vec2(0.0001));
+  vec2 lensDirection = normalize(mix(radial, normal, smoothstep(0.12, 0.75, edge)) + vec2(0.0001));
   float debugStrength = u_debugMode > 1.5 ? 4.5 : 1.0;
-  float lensPixels = u_refraction * debugStrength * min(u_rect.z, u_rect.w) * (0.035 + edge * 0.13 + lip * 0.055);
+  float opticalThickness = min(thickness, 96.0);
+  float lensPixels = u_refraction * debugStrength * opticalThickness * opticalProfile
+    * (0.004 + edge * 0.095 + lip * 0.028);
   vec2 offset = -lensDirection * lensPixels / u_viewport;
-  vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0))) * max(u_blur, 0.65);
+  float scatteringProfile = mix(0.45, 1.0, opticalProfile);
+  float scatteringShape = mix(0.34, 1.0, clamp(edge * 0.82 + lip * 0.18, 0.0, 1.0));
+  vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0)))
+    * max(u_blur * scatteringProfile * scatteringShape, 0.45);
   vec3 color = backdrop(v_uv + offset, blurStep);
   if (u_chromatic > 0.001) {
-    vec2 split = lensDirection * edge * u_chromatic * (u_debugMode > 1.5 ? 6.0 : 1.8) / u_viewport;
+    vec2 split = lensDirection * edge * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 6.0 : 1.8) / u_viewport;
     vec3 redSample = texture(u_backdrop, clamp(v_uv + offset + split, 0.0, 1.0)).rgb;
     vec3 blueSample = texture(u_backdrop, clamp(v_uv + offset - split, 0.0, 1.0)).rgb;
     color.r = mix(color.r, redSample.r, 0.34);
     color.b = mix(color.b, blueSample.b, 0.34);
   }
-  float fresnel = pow(clamp(edge, 0.0, 1.0), 3.0);
+  float fresnel = pow(clamp(edge, 0.0, 1.0), 2.6);
   float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 5.0);
   float specular = directional * (1.0 - smoothstep(1.0, 10.0, depth)) * 0.34;
   color = mix(color, u_tint, u_tintOpacity);

@@ -174,16 +174,14 @@ Considered successful in Chromium unless a reproducible stale-frame case is foun
 
 Obsolete asynchronous captures are generation-checked and discarded. WebGL presentation requires a current uploaded-and-drawn texture and an idle scheduler.
 
-### Milestone 3 — ACTIVE: optical calibration
+### Milestone 3 — optical calibration
 
-The active implementation plan is `OPTICAL_TUNING.md`.
+Considered successful in Chromium as of 2026-09-06 unless a reproducible optical regression is found.
 
-Codex must read that file before making the next visual changes.
+The default shader now derives a thickness/aspect profile for each surface, keeps the interior substantially calmer, and concentrates displacement, scattering, chromatic separation, and highlight response toward the rim. Large text remains recognizable through the 56 px mobile header while rings and color boundaries still bend visibly. The shader sample counts and public surface defaults did not change.
 
-The immediate problem is excessive lens displacement on shallow navigation surfaces, especially the mobile header over very large typography. The renderer should retain real refraction while concentrating strong displacement toward the glass edge and keeping the center substantially calmer.
+`OPTICAL_TUNING.md` is the completed implementation record. `PERFORMANCE_PLAN.md` remains historical/technical context and its performance acceptance criteria remain mandatory guardrails.
 
-**Do not casually rewrite Milestone 1 or Milestone 2 architecture while tuning the shader.**
+### Next milestone — not active automatically
 
-After each meaningful optical change, regression-test scrolling and texture freshness.
-
-`PERFORMANCE_PLAN.md` remains historical/technical context and its performance acceptance criteria remain mandatory guardrails.
+The likely next milestone is Safari and Firefox validation, followed by real-product integration or separately benchmarked capture-zone research. Do not begin one without an explicit request. Preserve all three completed Chromium milestones meanwhile.

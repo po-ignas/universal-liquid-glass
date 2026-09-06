@@ -69,7 +69,7 @@ export interface GlassMetrics {
   lastRenderError: string;
 }
 
-export type GlassDebugView = "normal" | "sample" | "exaggerated";
+export type GlassDebugView = "normal" | "sample" | "exaggerated" | "edge-mask";
 
 export interface GlassProviderProps {
   children?: ReactNode;

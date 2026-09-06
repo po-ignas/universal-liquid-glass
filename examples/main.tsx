@@ -59,7 +59,7 @@ function PipelineControls({ stress, onMutate }: { stress: boolean; onMutate: () 
   return (
     <aside data-liquid-glass-debug className="pipeline-controls">
       <strong>Backdrop pipeline</strong>
-      {(["sample", "exaggerated", "normal"] as GlassDebugView[]).map((mode) => (
+      {(["sample", "exaggerated", "edge-mask", "normal"] as GlassDebugView[]).map((mode) => (
         <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode}</button>
       ))}
       <button onClick={onMutate}>mutate page</button>

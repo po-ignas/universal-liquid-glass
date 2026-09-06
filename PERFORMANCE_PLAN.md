@@ -16,17 +16,17 @@ The zero-capture-during-scroll architecture has now been implemented and manuall
 
 This validates the hybrid architecture: expensive DOM capture must stay outside the interaction-critical path.
 
-### Milestone 2 — post-scroll stale-texture distortion: ACTIVE
+### Milestone 2 — post-scroll stale-texture distortion: PASSED in Chromium
 
-A remaining visual bug is visible when the user stops at an arbitrary scroll position. Immediately around the settle/refresh boundary, the glass can display a severely wrong/distorted version of the page beneath it: duplicated/stretched typography and shapes from another scroll position appear inside the glass.
+The stale-texture bug was fixed with independent viewport, capture, texture-upload, and completed-draw generations. Any invalidation immediately makes the previous WebGL texture ineligible for presentation; CSS remains active until a current-generation capture has uploaded and drawn while the scheduler is fully idle. Obsolete captures are discarded and leave one coalesced refresh pending for the newest generation.
 
-This is now the highest-priority bug. Do not regress Milestone 1 while fixing it.
+The scheduler and generation contract remain mandatory guardrails. Current verification measurements are recorded in `BENCHMARK.md`.
 
 ---
 
-# 1. Root-cause hypothesis for the remaining bug
+# 1. Confirmed root cause of the historical bug
 
-The current transition exposes WebGL too early.
+The former transition exposed WebGL too early.
 
 The renderer does this at scroll settle:
 
@@ -40,7 +40,7 @@ The renderer does this at scroll settle:
 
 The code path to inspect first is `restartInteractionSettleTimer()` in `src/renderer/GlassRenderer.ts`.
 
-The current logic effectively does:
+The former logic effectively did:
 
 ```ts
 captureScheduler.settle();

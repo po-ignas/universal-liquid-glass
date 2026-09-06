@@ -304,10 +304,15 @@ export class GlassRenderer {
     style.zIndex = style.zIndex || "1001";
     style.isolation = "isolate";
     if (this.quality === "fallback" || this.interactionPresentationActive) {
-      style.background = this.quality === "fallback" && this.diagnosticFailure
+      const permanentFallback = this.quality === "fallback";
+      style.background = permanentFallback && this.diagnosticFailure
         ? "repeating-linear-gradient(135deg, rgba(255,0,170,.72) 0 12px, rgba(55,0,75,.72) 12px 24px)"
-        : `color-mix(in srgb, ${record.options.tint} ${Math.round(record.options.tintOpacity * 180)}%, transparent)`;
-      style.backdropFilter = `blur(${Math.max(8, record.options.blur * 2)}px) saturate(155%)`;
+        : `color-mix(in srgb, ${record.options.tint} ${Math.round(record.options.tintOpacity * (permanentFallback ? 180 : 100))}%, transparent)`;
+      // Match the calm center of the shallow-surface shader. The former 8 px
+      // minimum blur made interaction glass visibly foggier than idle WebGL.
+      style.backdropFilter = permanentFallback
+        ? `blur(${Math.max(8, record.options.blur * 2)}px) saturate(155%)`
+        : `blur(${Math.max(1, record.options.blur * 0.35)}px) saturate(112%)`;
       style.setProperty("-webkit-backdrop-filter", style.backdropFilter);
     } else {
       style.background = "transparent";
@@ -319,6 +324,9 @@ export class GlassRenderer {
   private setInteractionPresentation(active: boolean): void {
     if (this.interactionPresentationActive === active) return;
     this.interactionPresentationActive = active;
+    // A stale WebGL texture must disappear immediately when interaction starts;
+    // otherwise the outgoing canvas briefly compounds the live CSS backdrop.
+    this.canvas.style.transition = active ? "none" : "opacity 110ms ease";
     this.canvas.style.opacity = active ? "0" : "1";
     for (const record of this.surfaces.values()) this.styleSurface(record);
   }
@@ -653,7 +661,8 @@ export class GlassRenderer {
     gl.uniform2f(this.uniforms.get("u_textureSize") ?? null, this.textureWidth, this.textureHeight);
     const config = QUALITY_CONFIG[this.quality];
     gl.uniform1f(this.uniforms.get("u_sampleTier") ?? null, config.blurSamples === 13 ? 1 : config.blurSamples === 9 ? 0.6 : 0);
-    gl.uniform1f(this.uniforms.get("u_debugMode") ?? null, this.debugView === "sample" ? 1 : this.debugView === "exaggerated" ? 2 : 0);
+    gl.uniform1f(this.uniforms.get("u_debugMode") ?? null,
+      this.debugView === "sample" ? 1 : this.debugView === "exaggerated" ? 2 : this.debugView === "edge-mask" ? 3 : 0);
     gl.uniform1f(this.uniforms.get("u_sourceReady") ?? null, this.sourceReady ? 1 : 0);
     for (const record of this.surfaces.values()) {
       const rect = record.rect;

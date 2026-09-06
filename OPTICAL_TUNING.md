@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 3: **Apple-like optical calibration**
+Milestone 3: **PASSED in Chromium on 2026-09-06 — Apple-like optical calibration**
 
 Milestones 1 and 2 are considered architecturally successful in Chromium:
 
@@ -14,7 +14,7 @@ Milestones 1 and 2 are considered architecturally successful in Chromium:
 
 Do not rewrite the capture scheduler, texture-generation system, or interaction-state architecture during this milestone unless a new reproducible correctness bug proves that one of those systems is wrong.
 
-The active goal is now visual quality.
+This file remains the implementation plan and verified completion record for the visual-quality milestone.
 
 ---
 
@@ -414,19 +414,17 @@ Do not stop at a written plan. Implement and visually test the milestone.
 
 # 17. Completion report
 
-When finished, report:
+## Verified implementation
 
-- shader/material files changed
-- previous displacement model
-- new displacement profile
-- how shallow surfaces are adapted
-- whether a new internal preset/profile was introduced
-- visual result for large typography, rings, footer and desktop header
-- shader sample-count changes, if any
-- measured frame average/p95/worst
-- confirmation of zero captures during active scroll
-- confirmation that stale-texture protection still passes
-- browsers actually tested
+- Changed `src/renderer/shaders.ts` for the material profile and added an `edge-mask` diagnostic through `src/types.ts`, `src/renderer/GlassRenderer.ts`, and `examples/main.tsx`.
+- Replaced the broad displacement floor and 72%-of-half-thickness edge band with a normalized-thickness/aspect profile, squared edge falloff, narrow exponential lip, and an almost calm center.
+- A 440×56 shallow surface receives about 0.08 px center displacement and about 2.4 px peak normal displacement at the rim at the default refraction setting; larger/thicker surfaces retain proportionally more depth up to the internal 96 px reference thickness.
+- Scattering and chromatic separation now follow the same optical/edge profile. Tint and public defaults were unchanged. No named internal or public preset was introduced; the profile is derived per surface.
+- HIGH/MEDIUM/LOW sample counts remain 13/9/5 scattering taps; HIGH and MEDIUM retain the existing two chromatic samples.
+- Large typography, rings, saturated footer backgrounds, mostly white backgrounds, and the desktop header passed manual Chromium inspection. Ten arbitrary mobile stops showed current, aligned content with no stale-frame flash.
+- A 6.1-second continuous scroll and a 4.9-second aggressive bidirectional scroll both produced zero captures during interaction and one capture after settle. Rapid stop/start plus mutation and resize-storm tests also coalesced to one settled refresh with matching generations.
+- Mobile settled capture time was 81.7–89.7 ms. Active-scroll rolling average was 8.3–9.1 ms; p95 was normally 9.0–9.2 ms and reached 16.6 ms; worst was 25.0 ms. These long intervals were not filtered.
+- TypeScript, all 15 unit tests, the production demo build, and npm audit passed. Chromium was tested; Safari and Firefox remain unverified.
 
 ---
 
