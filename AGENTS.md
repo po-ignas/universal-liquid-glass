@@ -8,13 +8,20 @@ Codex must read this file before making changes.
 
 The priority order is strict:
 
-1. Normal page speed and scroll responsiveness
-2. Cross-browser reliability
-3. Visual similarity to Apple Liquid Glass
-4. API simplicity
-5. Additional visual fidelity
+1. Continuous real WebGL glass on capable devices, including during scrolling
+2. Normal page speed, scroll responsiveness, and device stability
+3. Cross-browser reliability
+4. Visual similarity to Apple Liquid Glass
+5. API simplicity
+6. Additional visual fidelity
 
-The glass effect must degrade before the website does.
+The main product requirement is now explicit:
+
+> Capable devices must not switch from WebGL glass to CSS glass during scrolling.
+
+A visible WebGL -> CSS -> WebGL transition is considered a product failure, even if it is technically smooth.
+
+CSS is allowed only as a stable whole-session fallback for devices/browsers that cannot sustain continuous real glass safely. A fallback session should remain CSS at idle, during scroll, and after scroll rather than oscillating between rendering modes.
 
 ## Core architecture rules
 
@@ -23,93 +30,99 @@ The glass effect must degrade before the website does.
 - Normal text, buttons, links, icons, layout, accessibility and pointer interaction must remain regular DOM/React.
 - WebGL is only the visual glass layer.
 - Chromium must show real refraction. Blur-only output is not considered a successful WebGL implementation.
-- Keep a lightweight CSS fallback for unsupported or performance-constrained situations.
 - Reuse GPU resources. Do not allocate textures, buffers, programs or canvases inside the render loop.
+- Preserve the existing shader/material calibration unless the active milestone specifically requires a measured change.
 
-## DOM capture is expensive
+## Continuous glass requirement
 
-Treat DOM rasterization as an expensive, blocking operation.
+For capable devices the desired state is:
 
-Never assume that lowering screenshot resolution alone makes DOM capture cheap. `html2canvas`-style tools may spend substantial time cloning, traversing, styling, layouting and painting the DOM even when the final texture is small.
+```text
+idle -> WebGL
+scroll -> WebGL
+settle -> WebGL
+```
 
-### Critical interaction rule
+Do not use temporary CSS interaction presentation as the target architecture for capable devices.
 
-**There must be zero DOM captures while the user is actively scrolling.**
+The active plan for achieving this is `NO_CSS_SCROLL.md`.
 
-During active scroll:
+Potential techniques include faster backdrop acquisition, safe repeated capture, scroll-delta UV compensation, overscan, surface-specific capture, and stable runtime capability downgrade. Measure before choosing.
 
-- do not call `html2canvas-pro`
-- do not start a new DOM rasterization job
-- do not repeatedly invalidate the backdrop texture
-- prioritize native browser scrolling and main-thread availability
-- temporarily use lightweight CSS glass, or freeze/fade the last valid WebGL result if that benchmarks better
+## Stable fallback requirement
 
-After scrolling settles:
+If continuous WebGL cannot be sustained safely on a device/browser:
 
-- debounce approximately 120-160 ms
-- coalesce the full gesture into one refresh
-- perform exactly one backdrop capture
-- upload the result to the existing WebGL texture
-- redraw the refractive glass
-- transition back to full WebGL glass smoothly
+```text
+idle -> CSS fallback
+scroll -> CSS fallback
+settle -> CSS fallback
+```
 
-If a capture is already running when interaction starts, do not queue an unbounded chain of follow-up captures.
+Avoid repeated mode switching during normal interaction.
 
-## Texture freshness contract
+Runtime fallback decisions should rely primarily on measured frame/capture/memory behavior, with hardware signals used only as initial hints.
 
-The renderer now tracks viewport, capture, uploaded-texture, and completed-draw generations.
+## Texture correctness contract
 
-This is a correctness invariant, not optional complexity.
+The renderer tracks viewport, capture, uploaded-texture, and completed-draw generations.
 
-- Any viewport/content invalidation makes the old WebGL backdrop stale.
-- An asynchronous capture that no longer matches the current viewport generation must be discarded.
-- A stale capture must never become the visible current texture.
-- WebGL may become visible only after the current generation has been captured, uploaded, drawn successfully, and the scheduler is fully idle.
-- CSS glass remains active while scrolling, settling, refreshing, resizing, dirty, failed, or otherwise not provably fresh.
+This remains a correctness invariant.
 
-Do not weaken this contract to simplify visual tuning.
+- Arbitrary stale textures must never be presented as exact current backdrops.
+- Obsolete asynchronous captures must be discarded.
+- Continuous mode may introduce an explicit `scroll-compensated` source state only when UV translation is mathematically valid and remains inside captured overscan.
+- Distinguish exact-fresh, valid-scroll-compensated, and invalid source states.
+- Do not weaken generation/race protection to keep WebGL visible.
 
-## Performance thresholds
+## DOM capture performance
 
-Do not treat long capture times as acceptable simply because the library is already on LOW quality.
+DOM rasterization is expensive until proven otherwise.
 
-Guidance:
+The current `html2canvas-pro` path has measured roughly 80-110 ms settled captures in Chromium. Do not run that path repeatedly during active scroll.
 
-- < 25 ms capture: excellent
-- 25-40 ms: acceptable for occasional refreshes
-- 40-60 ms: idle-only work
-- > 60 ms: strictly idle-only; never perform during interaction
+Milestone 4 must benchmark alternative capture engines/paths rather than assuming the current engine is permanent.
 
-A ~90 ms DOM capture is a serious main-thread stall and must not happen repeatedly during scrolling.
+Measure:
 
-At 60 fps the browser has about 16.7 ms per frame. A 90 ms capture can eliminate several frame opportunities.
+- capture wall time
+- main-thread impact
+- repeated capture cadence
+- memory growth
+- texture upload time
+- visual correctness
 
 ## Performance measurement rules
 
 Measure bad frames instead of filtering them out.
 
-- Never discard long frame intervals merely because they exceed a threshold.
 - Track worst frame time.
 - Track p95 frame time.
 - Track current/average FPS carefully.
-- Track last capture duration.
-- Track captures during the current scroll gesture.
-- Track captures in the last 10 seconds.
-- Track active interaction mode versus idle mode.
+- Track capture duration/cadence.
+- Track capture backlog.
+- Track source state: exact / compensated / invalid.
+- Track memory/context-loss behavior where practical.
 
-The adaptive quality system must see jank rather than hiding it from its statistics.
+The glass effect must never crash or severely degrade a phone merely to avoid CSS fallback.
 
-## Adaptive quality
+## Adaptive capability
 
 Use measured runtime performance as the final authority.
 
-Hardware hints such as `hardwareConcurrency`, `deviceMemory`, DPR and WebGL2 availability may influence the initial tier, but actual capture cost and frame timing override them.
+Hardware hints such as `hardwareConcurrency`, `deviceMemory`, DPR and WebGL2 availability may influence the initial decision, but actual performance overrides them.
 
-Preferred degradation path:
+Preferred high-level behavior:
 
-HIGH -> MEDIUM -> LOW -> interaction-safe CSS fallback
+```text
+continuous WebGL trial
+        |
+        +-- sustainable -> stay continuous WebGL
+        |
+        +-- unsafe/slow -> downgrade once to stable CSS fallback
+```
 
-Do not continue reducing shader fidelity if the real bottleneck is DOM capture scheduling.
+Do not repeatedly oscillate between WebGL and CSS on every scroll gesture.
 
 ## Mutation invalidation
 
@@ -121,17 +134,24 @@ Mutation handling must:
 - debounce/coalesce mutations aggressively
 - avoid self-sustaining invalidation loops
 - ignore irrelevant cosmetic/runtime mutations when possible
-- prefer explicit invalidation for route changes, resize-settled, scroll-settled and known visual changes
+- preserve continuous-mode correctness
 
-A clock, pulse animation, debug overlay, transient class change or internal library style update must not cause continuous backdrop captures.
+If scroll-compensated source data is being used, a relevant DOM mutation may invalidate that compensation and require a new source strategy. Handle this explicitly.
 
 ## Demo policy
 
-The default demo must represent normal usage and should be mostly static.
+The default demo must expose errors rather than hide them.
 
-Stress behaviors such as automatic DOM mutation, forced updates, repeated resize simulation or aggressive animation must be behind an explicit stress-test toggle.
+Keep strong test content behind glass:
 
-The normal demo should make refraction visually obvious without intentionally creating pathological capture workload.
+- very large typography
+- concentric rings
+- high-contrast lines/shapes
+- saturated colors
+
+The demo must make it obvious whether backdrop motion/refraction is live, frozen, stale, jumping, or CSS-based.
+
+Stress behaviors should remain behind explicit test controls.
 
 ## Scope
 
@@ -141,22 +161,22 @@ Primary intended surfaces:
 - mobile header
 - mobile fixed footer/navigation
 
-Optimize for these constrained, persistent glass regions before attempting a generic universal glass surface for arbitrary animated DOM.
+Optimize continuous glass for these constrained fixed navigation surfaces first. Do not expand into a general graphics framework prematurely.
 
 ## Development workflow
 
 Before implementing a substantial subsystem:
 
 1. inspect the existing implementation
-2. identify the actual bottleneck from measurements
-3. inspect mature open-source implementations when useful
-4. verify licenses before deriving code
-5. prefer proven techniques over reinvention
-6. make the smallest architecture change that solves the measured problem
+2. identify the measured limitation
+3. research mature open-source/native solutions when relevant
+4. verify licenses before adding/deriving code
+5. benchmark alternatives rather than guessing
+6. preserve working milestones unless the new design demonstrably requires change
 7. build and run the demo
-8. test manual scroll, fast scroll, resize and idle
+8. test manual scroll, fast scroll, resize, mutation and prolonged use
 9. verify Chromium first, then Safari and Firefox
-10. document any remaining limitation
+10. document actual measurements and remaining limitations
 
 Do not stop at planning if the task asks for implementation.
 
@@ -164,24 +184,28 @@ Do not stop at planning if the task asks for implementation.
 
 ### Milestone 1 — scroll performance
 
-Considered successful in Chromium unless a reproducible regression is found.
+Historical success in Chromium: active scrolling became smooth by removing expensive DOM captures from the interaction path.
 
-The active-scroll path performs zero DOM captures and uses interaction-safe CSS presentation. One coalesced DOM capture occurs after settle.
+The zero-capture hybrid solution remains a useful fallback/reference architecture, but temporary CSS-on-scroll is no longer the target experience for capable devices.
 
 ### Milestone 2 — texture freshness
 
 Considered successful in Chromium unless a reproducible stale-frame case is found.
 
-Obsolete asynchronous captures are generation-checked and discarded. WebGL presentation requires a current uploaded-and-drawn texture and an idle scheduler.
+Generation/race protection must be preserved and extended for continuous mode.
 
 ### Milestone 3 — optical calibration
 
 Considered successful in Chromium as of 2026-09-06 unless a reproducible optical regression is found.
 
-The default shader now derives a thickness/aspect profile for each surface, keeps the interior substantially calmer, and concentrates displacement, scattering, chromatic separation, and highlight response toward the rim. Large text remains recognizable through the 56 px mobile header while rings and color boundaries still bend visibly. The shader sample counts and public surface defaults did not change.
+`OPTICAL_TUNING.md` is the completion record. Preserve the tuned material while working on continuous rendering.
 
-`OPTICAL_TUNING.md` is the completed implementation record. `PERFORMANCE_PLAN.md` remains historical/technical context and its performance acceptance criteria remain mandatory guardrails.
+### Milestone 4 — ACTIVE: continuous WebGL without temporary CSS
 
-### Next milestone — not active automatically
+Read and execute `NO_CSS_SCROLL.md`.
 
-The likely next milestone is Safari and Firefox validation, followed by real-product integration or separately benchmarked capture-zone research. Do not begin one without an explicit request. Preserve all three completed Chromium milestones meanwhile.
+The target is real WebGL refraction at idle, during scroll, and after scroll on capable devices, with no visible rendering-mode transition.
+
+CSS is only a stable whole-session fallback for incapable/unsafe devices.
+
+Do not mark Milestone 4 complete merely because CSS has been made visually closer to WebGL.
