@@ -2,517 +2,442 @@
 
 ## Status
 
-Priority milestone: **remove scroll lag before further visual tuning**.
+### Milestone 1 — scroll jank: PASSED in Chromium
 
-This plan is based on the current Chromium demo and the renderer currently committed to this repository.
+The zero-capture-during-scroll architecture has now been implemented and manually tested. Observed after implementation:
 
-Observed example from the demo:
+- scrolling is subjectively smooth
+- `captures this scroll gesture: 0` during active scrolling
+- frame timing during scroll approximately 8.3 ms average, p95 approximately 8.9–9.3 ms, worst approximately 16.7–17.4 ms in the observed run
+- WebGL2 remains active at HIGH quality
+- DOM capture still costs roughly 90–111 ms
+- capture policy correctly reports `strict-idle-only`
+- one settled capture occurs after the interaction rather than repeated capture work during the gesture
 
-- renderer: WebGL2
-- quality: LOW
-- WebGL program successfully linked
-- fallback: false
-- capture scale: approximately 0.35x
-- captured source texture: approximately 161x277 in the observed mobile viewport
-- capture duration: approximately 90 ms
-- hundreds of captures accumulated during testing
-- visible scroll jank remained severe
+This validates the hybrid architecture: expensive DOM capture must stay outside the interaction-critical path.
 
-This tells us the WebGL shader is not the primary bottleneck. The expensive operation is repeated DOM rasterization with `html2canvas-pro`.
+### Milestone 2 — post-scroll stale-texture distortion: ACTIVE
 
-The goal of this milestone is therefore **not to make the shader cheaper**. The goal is to remove DOM capture from the interaction-critical path.
+A remaining visual bug is visible when the user stops at an arbitrary scroll position. Immediately around the settle/refresh boundary, the glass can display a severely wrong/distorted version of the page beneath it: duplicated/stretched typography and shapes from another scroll position appear inside the glass.
 
----
-
-# 1. Required behavior
-
-## 1.1 Hard invariant
-
-During one continuous manual scroll gesture:
-
-> **DOM captures started while scrolling = 0**
-
-No exceptions for LOW/HIGH quality.
-
-The browser must be free to perform normal scrolling without competing with repeated DOM cloning/rasterization.
-
-## 1.2 Runtime state machine
-
-Implement an explicit interaction state rather than allowing scroll events to directly invalidate the capture pipeline.
-
-Suggested conceptual states:
-
-```text
-IDLE_WEBGL
-    |
-    | scroll/wheel/touch movement
-    v
-SCROLLING_LIGHTWEIGHT
-    |
-    | no relevant scroll event for 120-160 ms
-    v
-SETTLING
-    |
-    | exactly one capture
-    v
-REFRESHING
-    |
-    | texture upload + redraw
-    v
-IDLE_WEBGL
-```
-
-Names may differ, but behavior must remain equivalent.
+This is now the highest-priority bug. Do not regress Milestone 1 while fixing it.
 
 ---
 
-# 2. Scroll-start behavior
+# 1. Root-cause hypothesis for the remaining bug
 
-On the first scroll event of a gesture:
+The current transition exposes WebGL too early.
 
-1. mark interaction mode active
-2. update surface rectangles as cheaply as necessary
-3. cancel any scheduled-but-not-started capture timer
-4. set `backdropDirty`/pending refresh state for after the gesture, but DO NOT capture now
-5. switch the visible glass treatment to an interaction-safe presentation
-6. keep listening for scroll position changes
-7. restart the scroll-settle timer on each relevant scroll event
+The renderer does this at scroll settle:
 
-Do not call `invalidate("scroll")` if `invalidate()` can lead to capture scheduling during the gesture.
+1. `captureScheduler.settle()` changes the scheduler to `settling`
+2. `setInteractionPresentation(false)` is called immediately when the mode is not `idle`
+3. this restores the WebGL canvas opacity before the fresh post-scroll DOM capture has completed
+4. the WebGL texture still represents the previous viewport position
+5. the shader samples that stale texture using rectangles/UVs measured for the new viewport position
+6. the stale source is therefore refracted as if it were current, producing the large duplicated/stretched content visible in the screenshot
+7. only later does the ~90 ms capture finish and upload the correct texture
 
-Do not maintain a requestAnimationFrame loop merely to keep trying to capture.
+The code path to inspect first is `restartInteractionSettleTimer()` in `src/renderer/GlassRenderer.ts`.
 
-A frame loop during scroll is acceptable only if it performs cheap surface positioning/drawing and benchmarks well. It must not invoke DOM rasterization.
-
----
-
-# 3. Interaction-safe glass presentation
-
-Preferred first implementation: CSS glass during active scrolling.
-
-For each registered surface while interaction mode is active:
-
-```css
-background: translucent tint;
-backdrop-filter: blur(...) saturate(...);
--webkit-backdrop-filter: blur(...) saturate(...);
-```
-
-Requirements:
-
-- no layout jump
-- same border radius
-- same element geometry
-- normal DOM content remains unchanged
-- transition should be subtle
-- entering interaction mode must be very cheap
-
-The WebGL canvas may be faded/hidden while scrolling if needed to avoid visibly stale refraction.
-
-Alternative: freezing the last WebGL texture is allowed only if it looks acceptable and benchmarks better. Do not keep recapturing merely to make the frozen texture follow content.
-
-Recommended transition duration: roughly 80-150 ms, subject to visual testing.
-
-Do not animate expensive CSS properties continuously.
-
----
-
-# 4. Scroll-settle behavior
-
-Each relevant scroll event resets one settle timer.
-
-Target initial debounce: **140 ms**.
-
-Test within the 120-160 ms range.
-
-When the timer fires:
-
-1. verify scrolling really stopped
-2. mark interaction mode inactive / settling
-3. measure surface geometry
-4. request exactly one backdrop capture
-5. prevent duplicate capture requests from the same gesture
-6. upload the resulting canvas to the existing WebGL texture
-7. draw all visible surfaces
-8. restore/fade in WebGL glass
-9. clear the pending post-scroll refresh flag
-
-If a DOM mutation or resize occurs during the same settle period, coalesce it into this one capture where possible.
-
----
-
-# 5. Capture concurrency and coalescing
-
-Current behavior includes `capturing`, `captureAgain`, `backdropDirty`, timers and invalidation flags. Simplify their semantics so they cannot create a capture train.
-
-Required guarantees:
-
-- maximum one active DOM capture at a time
-- maximum one coalesced pending refresh after the active capture
-- no unbounded `captureAgain` loop
-- scroll events during an active capture do not queue one capture per event
-- a gesture produces at most one post-scroll refresh unless a genuinely new visual invalidation occurs afterward
-
-Consider replacing boolean interactions with explicit fields such as:
+The current logic effectively does:
 
 ```ts
-interactionMode: "idle" | "scrolling" | "settling"
-pendingCaptureReason: string | null
-captureInFlight: boolean
-postCaptureRefreshPending: boolean
-scrollGestureCaptureCount: number
+captureScheduler.settle();
+...
+if (interactionMode !== "idle") setInteractionPresentation(false);
 ```
 
-Exact API is up to implementation quality.
+That is unsafe. `settling` means a refresh is still pending. It does **not** mean the existing WebGL texture matches the current viewport.
+
+The library must never show a stale texture using current-viewport UV coordinates.
 
 ---
 
-# 6. Fix frame-performance measurement
+# 2. Required invariant: texture freshness
 
-The current renderer excludes sufficiently long frame intervals from its sample set. This hides severe stalls.
+Introduce an explicit freshness concept.
 
-Remove logic equivalent to:
+At all times the renderer must know whether the current WebGL backdrop texture corresponds to the current settled viewport state.
+
+Conceptually:
+
+```text
+textureFresh = true
+    idle WebGL is safe to display
+
+scroll starts
+    textureFresh = false
+    hide WebGL / show interaction CSS
+
+scrolling
+    textureFresh = false
+    zero captures
+
+scroll settles
+    textureFresh = false
+    KEEP CSS PRESENTATION ACTIVE
+    start one capture
+
+capture completes successfully
+    upload texture
+    draw using current surface geometry
+    textureFresh = true
+    only now reveal WebGL
+```
+
+The exact field name may differ, but this invariant must be explicit and testable.
+
+---
+
+# 3. Correct settle transition
+
+Change the state flow to:
+
+```text
+IDLE_WEBGL_FRESH
+      |
+      | scroll begins
+      v
+SCROLLING_CSS
+      |
+      | scroll stops ~140 ms
+      v
+SETTLING_CSS
+      |
+      | fresh capture starts
+      v
+REFRESHING_CSS
+      |
+      | capture succeeds + texture uploaded + draw completes
+      v
+IDLE_WEBGL_FRESH
+```
+
+Important:
+
+**CSS glass must remain visible throughout `settling` and `refreshing`.**
+
+Do not reveal the WebGL canvas merely because active scroll events stopped.
+
+The ~90 ms capture should happen behind the CSS presentation. Once the fresh texture is uploaded and rendered, crossfade to WebGL.
+
+---
+
+# 4. Where WebGL may become visible
+
+The normal WebGL presentation may be restored only when all of these are true:
+
+- interaction mode is effectively idle
+- no capture is in flight
+- no required settled capture is pending
+- the most recent required capture succeeded
+- the texture is marked fresh for the current viewport/scroll generation
+- current surface rectangles have been measured
+- one draw has completed using that fresh texture
+
+Do not call `setInteractionPresentation(false)` earlier than this.
+
+Specifically audit and remove/replace premature calls in:
+
+- `restartInteractionSettleTimer()`
+- `capture()` / `finally`
+- quality changes
+- mutation/resize paths
+- any scheduler transition that can move from scrolling to settling
+
+---
+
+# 5. Use generations to prevent race conditions
+
+A boolean freshness flag may be sufficient initially, but a generation counter is safer.
+
+Recommended model:
 
 ```ts
-if (delta < 80) frameTimes.push(delta)
+viewportGeneration: number
+textureGeneration: number
 ```
 
-Long frames are precisely what the monitor needs to observe.
+Increment `viewportGeneration` whenever the backdrop becomes stale because of:
 
-Track a bounded rolling window without dropping bad samples.
+- actual scroll position change
+- resize
+- relevant DOM mutation
+- route/content invalidation
 
-Add:
-
-- `lastFrameMs`
-- `averageFrameMs`
-- `worstFrameMs`
-- `p95FrameMs`
-- FPS derived from an appropriate rolling statistic
-
-Do not allow one idle tab/background interval to permanently poison the data. Visibility transitions may reset the rolling window, but interaction stalls must remain visible.
-
----
-
-# 7. Capture-performance policy
-
-The current adaptive system should distinguish visual quality from capture scheduling policy.
-
-Suggested interpretation:
-
-```text
-capture < 25 ms
-    dynamic refresh is relatively safe
-
-25-40 ms
-    occasional refresh only
-
-40-60 ms
-    idle-only capture
-
->60 ms
-    strict idle-only capture
-```
-
-Even if hardware initially qualifies for HIGH quality, measured capture duration wins.
-
-If capture cost is 90 ms, lowering shader sample count is not the primary response. The renderer should avoid capture during interaction.
-
-Keep the existing shader quality tiers for GPU workload, but introduce a capture-policy concept if useful.
-
----
-
-# 8. MutationObserver audit
-
-Current mutation observation is intentionally broad. Audit it carefully.
-
-Goals:
-
-1. library-owned canvas/surface/debug mutations never trigger capture
-2. CSS fallback/WebGL mode switching never triggers capture recursively
-3. debug overlay updates never trigger capture
-4. normal demo metrics updates never trigger capture
-5. rapid React mutations collapse into one idle refresh
-6. irrelevant mutations do not continuously rasterize the page
-
-Continue excluding elements under:
-
-- `[data-liquid-glass-surface]`
-- `[data-liquid-glass-renderer]`
-- `[data-liquid-glass-debug]`
-
-But verify this is sufficient when attributes/classes are changed on ancestors or when React updates surrounding content.
-
-Prefer a scheduled/coalesced idle invalidation instead of immediately making `backdropDirty` capture-eligible.
-
-Potential future public API:
+When capture begins, record:
 
 ```ts
-renderer.invalidate("known visual change")
+const captureGeneration = viewportGeneration;
 ```
 
-This can allow applications to explicitly signal meaningful background changes rather than depending entirely on broad DOM observation.
+After the asynchronous DOM capture returns:
 
-Do not remove automatic invalidation entirely in this milestone unless necessary; make it safe first.
+- if `captureGeneration !== viewportGeneration`, the result is stale
+- do not reveal it as current glass
+- it may be discarded, or uploaded only if useful internally, but it must not mark the texture fresh
+- ensure one coalesced fresh capture remains pending for the latest generation
 
----
+On a successful current-generation upload:
 
-# 9. Demo cleanup
-
-The normal demo must stop artificially creating a continuous workload.
-
-Current demo includes a periodic pulse/update. Remove or disable it in the normal path.
-
-Create an explicit optional stress-test mode if useful:
-
-```text
-Normal demo
-- static content
-- realistic header/footer
-- obvious colorful content behind glass
-- manual scroll
-
-Stress demo
-- periodic DOM mutation
-- animated content
-- resize testing
-- forced invalidations
+```ts
+textureGeneration = captureGeneration;
 ```
 
-Debug overlays and pipeline controls must themselves be ignored by backdrop capture and mutation invalidation.
+WebGL may be revealed only when:
 
-Debug should not default to production behavior when this library is consumed normally.
-
----
-
-# 10. Diagnostics required for this milestone
-
-Extend the existing diagnostics with:
-
-```text
-interaction mode: idle | scrolling | settling | refreshing
-captures this scroll gesture: N
-captures last 10 seconds: N
-last capture: XX.X ms
-average capture: XX.X ms (optional)
-last frame: XX.X ms
-average frame: XX.X ms
-p95 frame: XX.X ms
-worst frame: XX.X ms
-pending capture: yes/no + reason
-capture in flight: yes/no
+```ts
+textureGeneration === viewportGeneration
 ```
 
-Keep existing useful diagnostics:
+This protects against the user starting another scroll while the previous 90 ms capture is still resolving.
 
-- renderer mode
-- quality tier
-- WebGL version
-- shader status
-- source texture dimensions/status
-- canvas/viewport dimensions
-- DPR
-- capture scale
-- framebuffer status
-- surface rect
-- sampled UV
-- last WebGL error
+---
 
-### Important validation indicator
+# 6. Critical race: user scrolls again during post-scroll capture
 
-While manually scrolling, this must remain:
+Test this deliberately.
+
+Sequence:
 
 ```text
-captures this scroll gesture: 0
+scroll
+stop
+capture begins
+before capture finishes -> scroll again
 ```
 
-If it increments, the milestone fails.
+Expected behavior:
+
+- CSS glass remains visible
+- second scroll remains smooth
+- old capture result must not flash onto screen
+- old capture must not mark texture fresh
+- no capture begins during the second active scroll
+- after the second scroll settles, exactly one current-generation capture refreshes the texture
+- only then WebGL returns
+
+This is essential because capture duration is around 90–110 ms, long enough for users to resume interaction before it finishes.
 
 ---
 
-# 11. Acceptance tests
+# 7. Capture failure behavior
 
-Do not declare this task complete merely because TypeScript builds.
+If a settled capture fails, produces an invalid/empty source, loses WebGL, or throws:
 
-## Test A - slow continuous scroll
+- do not reveal stale WebGL
+- keep CSS glass active
+- keep the page fully usable
+- mark the texture stale
+- retry only according to a conservative idle policy; do not create a loop
 
-- open Chromium demo
-- begin slowly scrolling for at least 5 seconds
-- observe glass header/footer
-- confirm normal content tracks input smoothly
-- confirm zero captures start during gesture
-- stop scrolling
-- confirm exactly one capture occurs after settle debounce
-- confirm WebGL glass returns/refreshes
-
-PASS requires zero capture during the active gesture.
-
-## Test B - aggressive scroll
-
-- rapidly scroll up/down for 5-10 seconds
-- no DOM capture during active movement
-- no growing capture queue
-- one coalesced refresh after final settle
-- no multi-second catch-up sequence
-
-## Test C - repeated short gestures
-
-Perform several small scrolls separated by pauses.
-
-Each gesture should produce at most one post-settle refresh.
-
-## Test D - mutation while idle
-
-Change relevant page content while idle.
-
-Expected: one coalesced refresh, not repeated capture loops.
-
-## Test E - mutation while scrolling
-
-Trigger a relevant mutation during active scrolling.
-
-Expected: mark refresh pending but do not capture until scrolling settles. Coalesce into post-scroll capture.
-
-## Test F - resize
-
-Resize viewport continuously.
-
-Do not perform expensive repeated captures for every resize event. Use cheap geometry/canvas updates during interaction and one settled capture.
-
-## Test G - WebGL fallback
-
-Force WebGL unavailable/failure.
-
-CSS glass should remain usable and page interaction must stay smooth.
-
-## Test H - no debug mode
-
-Run normal demo/library without debug overlay and stress mutation. Verify behavior remains correct.
+Correctness is more important than briefly restoring refraction.
 
 ---
 
-# 12. Success criteria
+# 8. Transition behavior
 
-The milestone is successful only when all of these are true:
+Once the new texture is valid and a draw has completed:
 
-- manual scrolling no longer feels severely laggy
-- zero DOM captures start during active continuous scroll
-- one capture occurs after scroll settles
-- no capture backlog builds
-- WebGL refraction remains intact when idle
-- Chromium still displays genuine refraction/distortion
-- normal DOM remains interactive and accessible
-- CSS fallback handles interaction periods gracefully
-- mutation handling cannot cause self-sustaining capture loops
-- long frames are measured rather than discarded
-- TypeScript/build/tests pass
+- crossfade CSS -> WebGL subtly
+- target approximately 80–120 ms
+- avoid a moment where both layers visually compound into excessive blur/opacity
+- avoid layout/style mutation that itself triggers a new backdrop capture
 
-Visual glass quality may temporarily decrease during motion. That is intentional. Interaction performance has priority.
-
----
-
-# 13. Do not do these things
-
-Do NOT attempt to solve this milestone primarily by:
-
-- reducing capture scale from 0.35 to an even blurrier value
-- removing refraction from the shader
-- reducing everything to CSS blur permanently
-- creating multiple WebGL canvases
-- capturing once per glass surface
-- repeatedly rasterizing `document.documentElement` during scroll
-- adding more requestAnimationFrame loops without profiling
-- hiding long frames from metrics
-- adding arbitrary timeouts that still permit repeated captures
-
-The measured bottleneck is DOM capture frequency and scheduling.
-
----
-
-# 14. Secondary optimization after zero-capture scrolling works
-
-Only after the primary milestone passes, benchmark whether capture itself can be reduced further.
-
-Potential investigation: **backdrop-zone capture**.
-
-For fixed header/footer use cases, only regions behind those surfaces matter visually. Explore whether capturing/rasterizing only required viewport zones plus overscan can reduce cost.
-
-Example:
+The user should perceive:
 
 ```text
-viewport
-+--------------------------+
-| HEADER CAPTURE ZONE      |
-| + overscan               |
-+--------------------------+
-|                          |
-| no glass sampling here   |
-|                          |
-+--------------------------+
-| FOOTER CAPTURE ZONE      |
-| + overscan               |
-+--------------------------+
+scrolling: smooth lightweight glass
+stop: same stable-looking lightweight glass for ~capture duration
+fresh refractive glass quietly resolves into place
 ```
 
-Important: cropping the output of `html2canvas` may not significantly reduce DOM traversal/layout cost. Benchmark before adopting this architecture.
-
-Do not complicate the implementation with zone capture until the zero-capture-during-scroll milestone is working.
+They must never see the previous viewport refracted at the new scroll position.
 
 ---
 
-# 15. Longer-term architecture consideration
+# 9. Diagnostics to add
 
-Arbitrary live DOM cannot be cheaply sampled as a true GPU backdrop in every browser because browsers do not expose the already-composited webpage as a general WebGL texture.
-
-Therefore the sustainable cross-browser design is hybrid:
+Add enough diagnostics to prove the freshness contract:
 
 ```text
-IDLE
+texture freshness: fresh | stale
+viewport generation: N
+texture generation: N
+capture generation: N or none
+webgl presentation: visible | hidden
+```
+
+During scrolling and settled capture:
+
+```text
+texture freshness: stale
+webgl presentation: hidden
+```
+
+After successful current-generation upload/draw:
+
+```text
+texture freshness: fresh
+viewport generation == texture generation
+webgl presentation: visible
+```
+
+---
+
+# 10. Regression requirements from Milestone 1
+
+These are non-negotiable while fixing stale-texture distortion:
+
+- zero DOM captures during active continuous scrolling
+- no capture backlog
+- no repeated html2canvas calls during scrolling
+- CSS interaction mode remains cheap
+- long frame metrics remain measured
+- WebGL2 genuine refraction remains intact when fresh/idle
+- one shared WebGL2 renderer
+- normal DOM remains accessible and interactive
+
+Do not solve the distortion by returning to continuous capture.
+
+---
+
+# 11. Acceptance tests for Milestone 2
+
+## Test A — stop at random positions
+
+Repeatedly scroll and stop at at least 10 arbitrary positions containing visually distinct text/shapes.
+
+PASS:
+
+- no duplicated old typography
+- no stretched old shapes
+- no wrong previous-scroll content inside glass
+- CSS presentation remains until fresh texture is ready
+- WebGL returns only with correct current backdrop
+
+## Test B — slow scroll then stop
+
+Slowly move content beneath the header and stop with high-contrast text partially behind the glass.
+
+PASS: the final refracted text corresponds exactly to the current content position.
+
+## Test C — fast flick then stop
+
+Fast scroll/flick and stop abruptly.
+
+PASS: no stale texture flash during the ~90–110 ms refresh.
+
+## Test D — resume before capture completes
+
+Scroll, stop, then begin scrolling again within ~50 ms.
+
+PASS: stale first capture is never revealed; second interaction remains smooth; one fresh capture occurs after final settle.
+
+## Test E — repeated stop/start
+
+Perform 10 quick stop/start gestures.
+
+PASS: no capture train, no stale flashes, no generation mismatch shown as WebGL.
+
+## Test F — resize and stop
+
+Resize viewport and stop.
+
+PASS: CSS remains until a texture for the new dimensions is uploaded and drawn.
+
+## Test G — DOM mutation while stale
+
+Stop scrolling, then mutate relevant content before the pending capture completes.
+
+PASS: obsolete capture does not become visible; latest generation wins.
+
+---
+
+# 12. Previous Milestone 1 architecture (retain)
+
+DOM rasterization remains expensive. The sustainable cross-browser design is hybrid:
+
+```text
+IDLE + FRESH
 DOM -> occasional capture -> shared WebGL texture -> true refractive glass
 
-INTERACTION
+INTERACTION / STALE
 normal DOM -> native scrolling
-           -> lightweight CSS glass / frozen WebGL presentation
+           -> lightweight CSS glass
 
-SETTLED
-one fresh DOM capture -> texture upload -> WebGL refraction resumes
+SETTLED BUT STILL STALE
+CSS glass stays visible
+-> one DOM capture happens behind it
+-> texture upload
+-> current-generation draw
+
+FRESH AGAIN
+crossfade -> WebGL refraction
 ```
 
-This is an intentional architecture, not a temporary hack.
-
-The renderer should make this transition difficult for a normal user to notice.
+The shader is not the current bottleneck. Do not weaken it to fix scheduling correctness.
 
 ---
 
-# 16. Implementation order for Codex
+# 13. Performance policy retained
 
-Execute in this order:
+Capture timing guidance:
 
-1. Read `AGENTS.md` and this file completely.
-2. Inspect current `GlassRenderer`, capture manager, provider, surface styling, demo and performance tests.
-3. Record current behavior and identify every path that can call `captureViewport()`.
-4. Introduce explicit interaction/capture scheduling state.
-5. Enforce zero capture during scroll.
-6. Add lightweight interaction glass mode.
-7. Add one post-scroll capture after ~140 ms settle.
-8. Fix capture concurrency/coalescing.
-9. Fix long-frame metrics.
-10. Add scroll/capture diagnostics.
-11. Audit MutationObserver invalidation.
-12. Remove normal-demo pulse/stress mutation.
-13. Add/update unit tests for scheduling invariants where practical.
-14. Build/typecheck/test.
-15. Run the demo and manually verify the acceptance tests.
-16. Only after performance passes, make minor visual transition adjustments if necessary.
+```text
+<25 ms     dynamic refresh potentially safe
+25-40 ms   occasional refresh
+40-60 ms   idle-only
+>60 ms     strict-idle-only
+```
 
-Do not stop after writing a design or TODO. Implement the milestone.
+The observed ~90–111 ms capture cost remains `strict-idle-only`.
 
-When finished, summarize:
+---
 
+# 14. Mutation and demo rules retained
+
+- library-owned canvas/surface/debug mutations must not trigger capture
+- coalesce mutations aggressively
+- automatic stress/pulse mutation belongs behind an explicit stress mode
+- debug overlay must not contaminate capture or trigger invalidation
+- normal demo should represent realistic usage
+
+---
+
+# 15. Implementation order for Codex now
+
+1. Read `AGENTS.md` and this updated file completely.
+2. Preserve the successful zero-capture scrolling implementation.
+3. Inspect `restartInteractionSettleTimer()`, `setInteractionPresentation()`, `capture()`, `CaptureScheduler`, and all paths that reveal WebGL.
+4. Reproduce the stale-texture bug by stopping at arbitrary scroll positions.
+5. Implement explicit texture freshness, preferably with viewport/texture generations.
+6. Keep CSS presentation active through settling and refreshing.
+7. Reveal WebGL only after a successful current-generation texture upload and draw.
+8. Handle scroll-again-during-capture race safely.
+9. Handle failed/obsolete captures without stale flashes.
+10. Add freshness/generation diagnostics.
+11. Add scheduler/renderer tests for stale generation behavior where practical.
+12. Run TypeScript/unit/build validation.
+13. Manually execute Milestone 2 acceptance tests in Chromium.
+14. Confirm Milestone 1 remains passed.
+15. Do not tune shader appearance until this correctness bug is resolved.
+
+When finished report:
+
+- confirmed root cause
 - files changed
-- old capture behavior
-- new capture behavior
-- measured capture count during scroll
-- measured capture duration
-- measured frame/p95/worst timing if available
-- any remaining source of jank
-- browser(s) actually tested
+- exact freshness/generation mechanism
+- whether any stale capture can still become visible
+- captures during active scroll
+- capture duration
+- frame average/p95/worst during scroll
+- results of random-stop and resume-during-capture tests
+- browsers actually tested
+
+---
+
+# 16. Longer-term optimization after correctness
+
+Once both smooth scrolling and texture freshness are stable, benchmark backdrop-zone capture for fixed headers/footers. Do not begin that optimization until this bug is fixed. Cropping output may not reduce DOM traversal cost, so benchmark before changing architecture.
