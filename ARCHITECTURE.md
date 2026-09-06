@@ -16,13 +16,13 @@ Only the visible viewport is allocated. Same-sized captures update existing text
 
 The vertex stage positions a unit quad over each live surface rect. The fragment stage uses a rounded-box signed-distance field for shape masking, edge depth, and outward normals. A broad curved-lens term blends radial and SDF normals; a tighter exponential lip increases edge displacement. The displaced backdrop is sampled with a tier-dependent 5/9/13-tap scattering kernel. HIGH/MEDIUM add two low-cost channel-offset samples. Tint, a cubic edge/Fresnel approximation, directional rim specular, and opposing inner shading finish the material.
 
-This is real texture-coordinate displacement. CSS `backdrop-filter` is used only in FALLBACK.
+This is real texture-coordinate displacement. CSS `backdrop-filter` is used while the captured texture is stale or being refreshed, and as the permanent fallback when WebGL2 is unavailable.
 
 ## Invalidations and idle behavior
 
-The renderer is dirty-driven. ResizeObserver updates geometry; passive capture-phase scroll events invalidate position/backdrop; MutationObserver excludes changes inside glass/debug/renderer nodes and debounces other content changes; `popstate` invalidates after route history navigation. Repeated requests are coalesced, a capture is never run concurrently, and the requestAnimationFrame loop stops once capture and drawing settle.
+The renderer is dirty-driven. ResizeObserver updates geometry; passive capture-phase scroll events mark the backdrop stale; MutationObserver excludes changes inside glass/debug/renderer nodes and debounces other content changes; `popstate` invalidates after route history navigation. Repeated requests are coalesced, a capture is never run concurrently, and the requestAnimationFrame loop stops once capture and drawing settle.
 
-During scrolling the capture cadence is relaxed and scale reduced. A 150 ms scroll-settle timer requests the final clean capture. Resize captures wait 180 ms after the last event.
+Every relevant viewport/content change increments a viewport generation. A capture records that generation, and its output is discarded if the viewport generation changes before completion. The WebGL layer can become visible only after a current-generation texture upload and draw, while the scheduler is idle with no pending work and current surface geometry. Scrolling starts zero captures; a 140 ms settle timer requests one coalesced refresh behind CSS glass. Resize uses the same mechanism with a 160 ms settle timer. Capture failure leaves CSS active and permits at most one conservative idle retry for that generation.
 
 ## Quality controller
 

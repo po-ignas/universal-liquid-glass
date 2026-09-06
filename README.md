@@ -47,7 +47,7 @@ npm install
 npm run demo
 ```
 
-Open `http://127.0.0.1:5173/?debug=1`. The page deliberately puts high-contrast type, rules, gradients, and cards behind fixed desktop/mobile navigation so real displacement is distinguishable from transparent blur.
+Open `http://127.0.0.1:5173/?debug`. The page deliberately puts high-contrast type, rules, gradients, and cards behind fixed desktop/mobile navigation so real displacement is distinguishable from transparent blur.
 
 ## How it works
 
@@ -65,7 +65,7 @@ accessible DOM content remains above the visual layer
 
 The renderer captures only the viewport, not an arbitrarily tall document. Captures exclude the renderer, glass surfaces, and debug UI. Texture storage is reused with `texSubImage2D` whenever dimensions do not change. The render loop sleeps when nothing is dirty.
 
-Scroll events are passive. While scrolling, captures use a lower temporary scale and a longer throttle; 150 ms after scrolling settles, the renderer requests a final tier-quality snapshot. Resize and mutation bursts are coalesced. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
+Scroll events are passive and start no DOM captures. During scrolling, settling, and the post-scroll capture, surfaces use lightweight CSS glass and the stale WebGL canvas stays hidden. Roughly 140 ms after scrolling settles, one coalesced capture refreshes the shared texture. Viewport and texture generations prevent an obsolete asynchronous result from becoming visible; WebGL returns only after the current generation uploads and draws successfully. Resize and mutation bursts use the same freshness contract. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
 
 ## Adaptive performance
 
@@ -78,7 +78,7 @@ Responsiveness wins over fidelity. Capability hints only seed the starting tier;
 | Low | 0.35× | 220 ms | 5 blur taps, no chromatic split | 1.25× |
 | Fallback | none | none | CSS blur/tint | 1× |
 
-During active scrolling the current capture scale is multiplied by `0.72`. Two sustained stressed samples normally lower a tier; LOW requires three stressed samples before CSS fallback. Recovery is deliberately slower (eight comfortable samples).
+Measured frame pressure controls shader quality. Capture duration controls capture policy separately: captures above 60 ms are classified as strict idle-only work instead of weakening refraction to disguise DOM-rasterization cost. Two sustained stressed frame samples normally lower a tier; LOW requires three stressed samples before CSS fallback. Recovery is deliberately slower (eight comfortable samples).
 
 ## Browser support
 
@@ -93,7 +93,7 @@ The runtime contains no browser-specific SVG-filter refraction. That avoids Chro
 ## Known limitations
 
 - DOM rasterization is not a browser compositor API. Video frames, WebGL/canvas content, cross-origin images without CORS, iframes, complex filters, and some advanced CSS may be absent or stale in snapshots.
-- Scrolling uses throttled snapshots, so fast motion can briefly show an older refracted background. This is intentional; the final settled capture corrects it.
+- Active scrolling temporarily uses CSS glass. A single expensive DOM rasterization still occurs after settle, but the previous viewport texture is never intentionally revealed at the new position.
 - The shared canvas occupies z-index `1000` inside the provider isolation context and surfaces default to `1001`. Application overlays should establish a higher layer deliberately.
 - Glass surfaces should not sit inside transformed ancestors; transforms change fixed-position and stacking behavior in browsers.
 - One provider is designed for a handful of navigation surfaces, not hundreds of cards.
@@ -107,7 +107,7 @@ npm test
 npm run demo:build
 ```
 
-The debug overlay reports mode, active tier, recent frame timing/FPS, last capture duration, effective capture scale, capture count, surface count, and texture dimensions. See [BENCHMARK.md](./BENCHMARK.md) for the benchmark procedure and current environment status.
+The debug overlay reports mode, active tier, interaction/capture state, viewport/texture/capture generations, texture freshness, WebGL visibility, frame timing/FPS, capture duration/count, surface geometry, and texture dimensions. See [BENCHMARK.md](./BENCHMARK.md) for the benchmark procedure and current environment status.
 
 ## Attribution
 

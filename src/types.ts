@@ -45,6 +45,11 @@ export interface GlassMetrics {
   capturePolicy: GlassCapturePolicy;
   pendingCaptureReason: string | null;
   captureInFlight: boolean;
+  textureFreshness: "fresh" | "stale";
+  viewportGeneration: number;
+  textureGeneration: number;
+  captureGeneration: number | null;
+  webglPresentation: "visible" | "hidden";
   surfaceCount: number;
   textureWidth: number;
   textureHeight: number;
