@@ -3,6 +3,8 @@ precision highp float;
 in vec2 a_position;
 uniform vec4 u_rect;
 uniform vec2 u_viewport;
+uniform vec2 u_sourceOffset;
+uniform vec2 u_sourceSize;
 out vec2 v_uv;
 out vec2 v_local;
 void main() {
@@ -10,7 +12,7 @@ void main() {
   vec2 pixel = u_rect.xy + unit * u_rect.zw;
   vec2 clip = pixel / u_viewport * 2.0 - 1.0;
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
-  v_uv = pixel / u_viewport;
+  v_uv = (pixel + u_sourceOffset) / u_sourceSize;
   v_local = (unit - 0.5) * u_rect.zw;
 }`;
 
@@ -21,6 +23,7 @@ in vec2 v_local;
 out vec4 outColor;
 uniform sampler2D u_backdrop;
 uniform vec2 u_viewport;
+uniform vec2 u_sourceSize;
 uniform vec2 u_textureSize;
 uniform vec4 u_rect;
 uniform float u_radius;
@@ -105,14 +108,14 @@ void main() {
   float opticalThickness = min(thickness, 96.0);
   float lensPixels = u_refraction * debugStrength * opticalThickness * opticalProfile
     * (0.004 + edge * 0.095 + lip * 0.028);
-  vec2 offset = -lensDirection * lensPixels / u_viewport;
+  vec2 offset = -lensDirection * lensPixels / u_sourceSize;
   float scatteringProfile = mix(0.45, 1.0, opticalProfile);
   float scatteringShape = mix(0.34, 1.0, clamp(edge * 0.82 + lip * 0.18, 0.0, 1.0));
   vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0)))
     * max(u_blur * scatteringProfile * scatteringShape, 0.45);
   vec3 color = backdrop(v_uv + offset, blurStep);
   if (u_chromatic > 0.001) {
-    vec2 split = lensDirection * edge * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 6.0 : 1.8) / u_viewport;
+    vec2 split = lensDirection * edge * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 6.0 : 1.8) / u_sourceSize;
     vec3 redSample = texture(u_backdrop, clamp(v_uv + offset + split, 0.0, 1.0)).rgb;
     vec3 blueSample = texture(u_backdrop, clamp(v_uv + offset - split, 0.0, 1.0)).rgb;
     color.r = mix(color.r, redSample.r, 0.34);

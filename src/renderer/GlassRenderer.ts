@@ -1,9 +1,10 @@
 import { captureViewport } from "../capture/captureManager.js";
 import { adaptQuality } from "../performance/adaptiveQuality.js";
+import { mapBackdropSource, type BackdropSourceMapping, type BackdropSourceMetadata } from "../performance/backdropSource.js";
 import { CaptureScheduler } from "../performance/captureScheduler.js";
 import { summarizeFrameTimes } from "../performance/frameMetrics.js";
 import { initialQuality, QUALITY_CONFIG } from "../performance/quality.js";
-import { canPresentFreshWebgl, TextureFreshness } from "../performance/textureFreshness.js";
+import { TextureFreshness } from "../performance/textureFreshness.js";
 import type { GlassCapturePolicy, GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders.js";
 import { resolveSurfaceOptions } from "./surfaceOptions.js";
@@ -27,6 +28,7 @@ interface SurfaceRecord {
 
 const QUALITY_ORDER: GlassQuality[] = ["fallback", "low", "medium", "high"];
 const LIBRARY_OWNED_SELECTOR = "[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]";
+const POC_OVERSCAN_VIEWPORTS = 3;
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
@@ -131,6 +133,9 @@ export class GlassRenderer {
   private comfortableSamples = 0;
   private currentDpr = 1;
   private currentCaptureScale = 0;
+  private contentGeneration = 0;
+  private sourceMetadata: BackdropSourceMetadata | null = null;
+  private textureUploadMs = 0;
   private loggedFirstCapture = false;
   private sourceReady = false;
   private debugView: GlassDebugView = "normal";
@@ -172,7 +177,7 @@ export class GlassRenderer {
         this.webglVersion = String(gl.getParameter(gl.VERSION));
         this.glProgram = program(gl);
         this.shaderStatus = "vertex compiled · fragment compiled · program linked";
-        this.uniformsFor("u_backdrop", "u_viewport", "u_textureSize", "u_rect", "u_radius", "u_refraction", "u_blur", "u_chromatic", "u_tintOpacity", "u_tint", "u_sampleTier", "u_debugMode", "u_sourceReady");
+        this.uniformsFor("u_backdrop", "u_viewport", "u_sourceOffset", "u_sourceSize", "u_textureSize", "u_rect", "u_radius", "u_refraction", "u_blur", "u_chromatic", "u_tintOpacity", "u_tint", "u_sampleTier", "u_debugMode", "u_sourceReady");
         this.vao = gl.createVertexArray();
         this.buffer = gl.createBuffer();
         this.texture = gl.createTexture();
@@ -324,20 +329,21 @@ export class GlassRenderer {
   private setInteractionPresentation(active: boolean): void {
     if (this.interactionPresentationActive === active) return;
     this.interactionPresentationActive = active;
-    // A stale WebGL texture must disappear immediately when interaction starts;
-    // otherwise the outgoing canvas briefly compounds the live CSS backdrop.
+    // This state is reserved for startup, resize/content invalidation, and the
+    // stable fallback. Ordinary scroll compensation never enters it.
     this.canvas.style.transition = active ? "none" : "opacity 110ms ease";
     this.canvas.style.opacity = active ? "0" : "1";
     for (const record of this.surfaces.values()) this.styleSurface(record);
   }
 
-  private markBackdropStale(reason: string): void {
+  private markBackdropStale(reason: string, contentChanged = true): void {
     clearTimeout(this.captureRetryTimer);
     this.captureRetryTimer = 0;
     this.captureRetryGeneration = -1;
     this.textureFreshness.invalidate();
+    if (contentChanged) this.contentGeneration += 1;
     this.lastInvalidation = reason;
-    this.setInteractionPresentation(true);
+    if (this.currentSourceMapping().state === "invalid") this.setInteractionPresentation(true);
     this.scheduleFrame();
   }
 
@@ -347,16 +353,8 @@ export class GlassRenderer {
   }
 
   private updatePresentation(): void {
-    const scheduling = this.captureScheduler.snapshot;
-    const texture = this.textureFreshness.snapshot;
-    const safeToReveal = canPresentFreshWebgl({
-      rendererAvailable: this.quality !== "fallback",
-      interactionMode: scheduling.interactionMode,
-      captureInFlight: scheduling.captureInFlight,
-      pendingCaptureReason: scheduling.pendingCaptureReason,
-      textureFresh: texture.textureFresh,
-      layoutDirty: this.layoutDirty,
-    });
+    const sourceState = this.currentSourceMapping().state;
+    const safeToReveal = this.quality !== "fallback" && this.sourceReady && sourceState !== "invalid";
     this.setInteractionPresentation(!safeToReveal);
   }
 
@@ -399,9 +397,6 @@ export class GlassRenderer {
 
   private onScrollIntent = (): void => {
     if (this.quality === "fallback") return;
-    // Hide WebGL before the compositor moves. A boundary wheel/touch gesture
-    // may not produce a position-changing scroll event, but one idle refresh
-    // is preferable to ever presenting a texture whose freshness is unknown.
     this.beginScrollInteraction("scroll settled");
   };
 
@@ -418,11 +413,10 @@ export class GlassRenderer {
   };
 
   private beginScrollInteraction(reason?: string): void {
-    if (reason) this.markBackdropStale("scroll pending");
+    if (reason) this.markBackdropStale("scroll pending", false);
     this.captureScheduler.beginScroll(reason);
     this.layoutDirty = true;
     this.cancelScheduledCapture();
-    this.setInteractionPresentation(true);
     this.restartInteractionSettleTimer(140);
     this.scheduleFrame();
     this.publish(false);
@@ -509,9 +503,7 @@ export class GlassRenderer {
     if (this.layoutDirty) this.measureSurfaces();
     const hasVisibleSurface = this.hasVisibleSurface();
     if (hasVisibleSurface) this.requestCapture(now);
-    if (!this.interactionPresentationActive
-      && this.textureFreshness.snapshot.textureFresh
-      && !this.captureScheduler.snapshot.captureInFlight) this.draw();
+    if (!this.interactionPresentationActive && this.currentSourceMapping().state !== "invalid") this.draw();
     this.publish(false, now);
     const state = this.captureScheduler.snapshot;
     const interactionActive = state.interactionMode === "scrolling" || state.interactionMode === "resizing";
@@ -534,6 +526,31 @@ export class GlassRenderer {
       if (rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth) return true;
     }
     return false;
+  }
+
+  private currentSourceMapping(): BackdropSourceMapping {
+    return mapBackdropSource(this.sourceMetadata, {
+      contentGeneration: this.contentGeneration,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+  }
+
+  private captureOverscan(scale: number): { x: number; y: number } {
+    if (!this.gl || scale <= 0) return { x: 0, y: 0 };
+    const desiredY = window.innerHeight * POC_OVERSCAN_VIEWPORTS;
+    const maxTextureSize = Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) || 4096;
+    const maxSourceHeight = maxTextureSize / scale;
+    // Keep source storage below roughly 24 MiB while respecting the hardware
+    // texture limit. This is allocated per capture/texture, never per frame.
+    const widthPixels = Math.max(1, Math.ceil(window.innerWidth * scale));
+    const maxPixelsHeight = 6_291_456 / widthPixels;
+    const maxMemoryHeight = maxPixelsHeight / scale;
+    const maxHeight = Math.min(maxSourceHeight, maxMemoryHeight);
+    const boundedY = Math.max(0, (maxHeight - window.innerHeight) / 2);
+    return { x: 0, y: Math.floor(Math.min(desiredY, boundedY)) };
   }
 
   private requestCapture(now: number): void {
@@ -563,11 +580,25 @@ export class GlassRenderer {
     const started = performance.now();
     let durationRecorded = false;
     let captureSucceeded = false;
+    const previousSourceReady = this.sourceReady;
+    const previousSourceStatus = this.sourceStatus;
     const config = QUALITY_CONFIG[this.quality];
     const scale = config.captureScale;
+    const overscan = this.captureOverscan(scale);
     const capturedViewport = {
       scrollX: window.scrollX, scrollY: window.scrollY,
       width: window.innerWidth, height: window.innerHeight,
+      contentGeneration: this.contentGeneration,
+    };
+    const candidateSource: BackdropSourceMetadata = {
+      captureGeneration,
+      contentGeneration: capturedViewport.contentGeneration,
+      captureScrollX: capturedViewport.scrollX,
+      captureScrollY: capturedViewport.scrollY,
+      viewportWidth: capturedViewport.width,
+      viewportHeight: capturedViewport.height,
+      overscanX: overscan.x,
+      overscanY: overscan.y,
     };
     this.currentCaptureScale = scale;
     try {
@@ -575,35 +606,40 @@ export class GlassRenderer {
         root: this.root,
         scale,
         ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
+        overscanX: overscan.x,
+        overscanY: overscan.y,
       });
       if (this.destroyed) return;
       const duration = performance.now() - started;
       this.recordCaptureDuration(duration);
       durationRecorded = true;
       this.evaluateQuality(duration);
-      const viewportMoved = capturedViewport.scrollX !== window.scrollX
-        || capturedViewport.scrollY !== window.scrollY
-        || capturedViewport.width !== window.innerWidth
-        || capturedViewport.height !== window.innerHeight;
-      if (viewportMoved && this.textureFreshness.isCaptureCurrent(captureGeneration)) {
-        this.markBackdropStale("viewport changed during capture");
-        this.queueCapture("viewport changed during capture");
-      }
-      if (viewportMoved || !this.textureFreshness.isCaptureCurrent(captureGeneration)) {
+      const candidateMapping = mapBackdropSource(candidateSource, {
+        contentGeneration: this.contentGeneration,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      });
+      const captureStillActive = this.textureFreshness.snapshot.captureGeneration === captureGeneration;
+      if (!captureStillActive || candidateMapping.state === "invalid") {
         const currentGeneration = this.textureFreshness.snapshot.viewportGeneration;
-        this.sourceStatus = `discarded obsolete capture generation ${captureGeneration}; current ${currentGeneration}`;
-        console.info("[universal-liquid-glass] discarded obsolete backdrop capture", { captureGeneration, currentGeneration, viewportMoved });
+        this.sourceStatus = `discarded unusable capture generation ${captureGeneration}; current ${currentGeneration}`;
+        if (candidateMapping.state === "invalid") this.queueCapture("capture moved beyond overscan");
+        console.info("[universal-liquid-glass] discarded unusable backdrop capture", { captureGeneration, currentGeneration, sourceState: candidateMapping.state });
         return;
       }
       const probe = this.probeSource(result);
-      this.sourceReady = probe.valid;
       this.sourceStatus = probe.message;
       if (!probe.valid) {
+        this.sourceReady = previousSourceReady;
+        this.sourceStatus = previousSourceStatus;
         this.lastRenderError = `Backdrop capture is empty: ${probe.message}`;
         console.error("[universal-liquid-glass] empty backdrop texture", { width: result.width, height: result.height, probe });
         return;
       }
       const gl = this.gl;
+      const uploadStarted = performance.now();
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       // v_uv is intentionally top-down (0 at the viewport top), matching
@@ -617,25 +653,40 @@ export class GlassRenderer {
         this.textureWidth = result.width; this.textureHeight = result.height;
       }
       const uploadError = gl.getError();
+      this.textureUploadMs = performance.now() - uploadStarted;
       if (uploadError !== gl.NO_ERROR) {
-        this.sourceReady = false;
+        this.sourceReady = previousSourceReady;
+        this.sourceStatus = previousSourceStatus;
         this.lastRenderError = `Texture upload WebGL error 0x${uploadError.toString(16)}`;
         console.error("[universal-liquid-glass] texture upload failed", this.lastRenderError);
         return;
       }
       if (this.layoutDirty) this.measureSurfaces();
-      if (!this.textureFreshness.markTextureUploaded(captureGeneration)) return;
-      if (!this.draw() || !this.textureFreshness.markDrawn(captureGeneration)) return;
+      this.sourceMetadata = candidateSource;
+      this.sourceReady = true;
+      const exact = candidateMapping.state === "exact" && this.textureFreshness.isCaptureCurrent(captureGeneration);
+      const uploaded = exact
+        ? this.textureFreshness.markTextureUploaded(captureGeneration)
+        : this.textureFreshness.markCompensatedTextureUploaded(captureGeneration);
+      if (!uploaded) return;
+      const drawn = this.draw() && (exact
+        ? this.textureFreshness.markDrawn(captureGeneration)
+        : this.textureFreshness.markCompensatedDrawn(captureGeneration));
+      if (!drawn) {
+        this.sourceReady = false;
+        return;
+      }
       captureSucceeded = true;
       this.lastRenderError = "none";
+      this.sourceStatus = `${probe.message}; overscan ${overscan.x}×${overscan.y}; ${candidateMapping.state}`;
       if (!this.loggedFirstCapture) {
         this.loggedFirstCapture = true;
         console.info("[universal-liquid-glass] first backdrop captured", this.makeMetrics());
       }
     } catch (error) {
       this.lastRenderError = error instanceof Error ? error.message : String(error);
-      this.sourceStatus = "capture failed";
-      this.sourceReady = false;
+      this.sourceStatus = previousSourceReady ? previousSourceStatus : "capture failed";
+      this.sourceReady = previousSourceReady;
       console.error("[universal-liquid-glass] backdrop capture failed", error);
       this.stressSamples += 1;
       if (this.stressSamples >= 3) this.degrade();
@@ -652,12 +703,16 @@ export class GlassRenderer {
 
   private draw(): boolean {
     if (!this.gl || !this.glProgram || !this.vao || !this.texture) return false;
+    const mapping = this.currentSourceMapping();
+    if (mapping.state === "invalid") return false;
     const gl = this.gl;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.glProgram); gl.bindVertexArray(this.vao); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.uniform1i(this.uniforms.get("u_backdrop") ?? null, 0);
     gl.uniform2f(this.uniforms.get("u_viewport") ?? null, window.innerWidth, window.innerHeight);
+    gl.uniform2f(this.uniforms.get("u_sourceOffset") ?? null, mapping.offsetX, mapping.offsetY);
+    gl.uniform2f(this.uniforms.get("u_sourceSize") ?? null, mapping.sourceWidth, mapping.sourceHeight);
     gl.uniform2f(this.uniforms.get("u_textureSize") ?? null, this.textureWidth, this.textureHeight);
     const config = QUALITY_CONFIG[this.quality];
     gl.uniform1f(this.uniforms.get("u_sampleTier") ?? null, config.blurSamples === 13 ? 1 : config.blurSamples === 9 ? 0.6 : 0);
@@ -743,6 +798,8 @@ export class GlassRenderer {
       this.interactionSettleTimer = 0;
       this.captureScheduler.reset();
       this.textureFreshness.reset();
+      this.sourceMetadata = null;
+      this.sourceReady = false;
       this.interactionPresentationActive = false;
       this.canvas.style.display = "none";
       for (const record of this.surfaces.values()) this.styleSurface(record);
@@ -795,13 +852,14 @@ export class GlassRenderer {
     this.captureTimestamps = this.captureTimestamps.filter((timestamp) => timestamp >= recentCaptureCutoff);
     const scheduling = this.captureScheduler.snapshot;
     const freshness = this.textureFreshness.snapshot;
+    const mapping = this.currentSourceMapping();
     const firstSurface = Array.from(this.surfaces.values()).find(({ rect }) =>
       rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= innerHeight,
     );
     const rect = firstSurface?.rect;
     const surfaceRect = rect ? `${rect.left.toFixed(1)},${rect.top.toFixed(1)} ${rect.width.toFixed(1)}×${rect.height.toFixed(1)}` : "none";
     const sampledUvs = rect
-      ? `${(rect.left / innerWidth).toFixed(3)},${(rect.top / innerHeight).toFixed(3)} → ${(rect.right / innerWidth).toFixed(3)},${(rect.bottom / innerHeight).toFixed(3)}`
+      ? `${((rect.left + mapping.offsetX) / mapping.sourceWidth).toFixed(3)},${((rect.top + mapping.offsetY) / mapping.sourceHeight).toFixed(3)} → ${((rect.right + mapping.offsetX) / mapping.sourceWidth).toFixed(3)},${((rect.bottom + mapping.offsetY) / mapping.sourceHeight).toFixed(3)}`
       : "none";
     return {
       mode: this.quality === "fallback" ? "fallback" : "webgl2", quality: this.quality,
@@ -817,6 +875,12 @@ export class GlassRenderer {
       viewportGeneration: freshness.viewportGeneration, textureGeneration: freshness.textureGeneration,
       captureGeneration: freshness.captureGeneration,
       webglPresentation: this.quality !== "fallback" && !this.interactionPresentationActive ? "visible" : "hidden",
+      sourceState: mapping.state,
+      captureScrollX: this.sourceMetadata?.captureScrollX ?? 0,
+      captureScrollY: this.sourceMetadata?.captureScrollY ?? 0,
+      scrollDeltaX: mapping.deltaX, scrollDeltaY: mapping.deltaY,
+      overscanX: this.sourceMetadata?.overscanX ?? 0, overscanY: this.sourceMetadata?.overscanY ?? 0,
+      overscanRemaining: mapping.remainingY, textureUploadMs: this.textureUploadMs,
       surfaceCount: this.surfaces.size,
       textureWidth: this.textureWidth, textureHeight: this.textureHeight,
       canvasWidth: this.canvas.width, canvasHeight: this.canvas.height, dpr: this.currentDpr,

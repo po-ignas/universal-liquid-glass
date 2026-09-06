@@ -105,3 +105,17 @@ test("resume-during-capture discards the first result and refreshes once after f
   assert.equal(freshness.snapshot.textureFresh, true);
   assert.equal(freshness.snapshot.textureGeneration, freshness.snapshot.viewportGeneration);
 });
+
+test("a renderer-validated compensated capture is recorded without becoming exact-fresh", () => {
+  const freshness = new TextureFreshness();
+  freshness.invalidate();
+  const captureGeneration = freshness.beginCapture();
+  freshness.invalidate();
+  assert.equal(freshness.markTextureUploaded(captureGeneration), false);
+  assert.equal(freshness.markCompensatedTextureUploaded(captureGeneration), true);
+  assert.equal(freshness.markCompensatedDrawn(captureGeneration), true);
+  freshness.finishCapture(captureGeneration);
+  assert.equal(freshness.snapshot.textureGeneration, captureGeneration);
+  assert.equal(freshness.snapshot.drawnGeneration, freshness.snapshot.viewportGeneration);
+  assert.equal(freshness.snapshot.textureFresh, false);
+});

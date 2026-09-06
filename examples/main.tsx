@@ -62,6 +62,8 @@ function PipelineControls({ stress, onMutate }: { stress: boolean; onMutate: () 
       {(["sample", "exaggerated", "edge-mask", "normal"] as GlassDebugView[]).map((mode) => (
         <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode}</button>
       ))}
+      <button onClick={() => window.scrollBy({ top: window.innerHeight * 1.75, behavior: "smooth" })}>POC scroll down</button>
+      <button onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>POC scroll top</button>
       <button onClick={onMutate}>mutate page</button>
       {stress ? <span>stress on</span> : null}
     </aside>

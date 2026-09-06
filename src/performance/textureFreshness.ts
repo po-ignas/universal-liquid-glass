@@ -67,9 +67,27 @@ export class TextureFreshness {
     return true;
   }
 
+  /**
+   * Records an upload whose captured scroll origin differs from the current
+   * viewport. The renderer must validate scroll compensation and content
+   * generation before using this explicit path.
+   */
+  markCompensatedTextureUploaded(generation: number): boolean {
+    if (this.captureGeneration !== generation) return false;
+    this.textureGeneration = generation;
+    this.drawnGeneration = -1;
+    return true;
+  }
+
   markDrawn(generation: number): boolean {
     if (!this.isCaptureCurrent(generation) || this.textureGeneration !== generation) return false;
     this.drawnGeneration = generation;
+    return true;
+  }
+
+  markCompensatedDrawn(generation: number): boolean {
+    if (this.captureGeneration !== generation || this.textureGeneration !== generation) return false;
+    this.drawnGeneration = this.viewportGeneration;
     return true;
   }
 

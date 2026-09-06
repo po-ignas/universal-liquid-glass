@@ -11,7 +11,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .desktop-nav { top: 18px; left: 50%; transform: translateX(-50%); width: min(860px, calc(100vw - 40px)); height: 64px; padding: 0 12px 0 22px; justify-content: space-between; }
 .brand { font-weight: 900; letter-spacing: -.06em; font-size: 22px; }.desktop-nav nav { display: flex; gap: 32px; font-size: 14px; font-weight: 650; }.desktop-nav button,.mobile-nav button { border: 0; border-radius: 17px; padding: 11px 16px; background: rgba(255,255,255,.5); }
 .mobile-nav,.mobile-footer { display: none; }
-.pipeline-controls { position:fixed; left:12px; bottom:12px; z-index:2147483646; display:flex; gap:6px; align-items:center; padding:8px; border-radius:12px; background:rgba(8,12,22,.9); color:white; font-size:11px; box-shadow:0 8px 30px rgba(0,0,0,.24); }
+.pipeline-controls { position:fixed; left:12px; bottom:12px; z-index:2147483646; display:flex; flex-wrap:wrap; max-width:calc(100vw - 24px); gap:6px; align-items:center; padding:8px; border-radius:12px; background:rgba(8,12,22,.9); color:white; font-size:11px; box-shadow:0 8px 30px rgba(0,0,0,.24); }
 .pipeline-controls strong { margin:0 5px; }.pipeline-controls button { border:1px solid rgba(255,255,255,.3); border-radius:7px; padding:5px 8px; color:white; background:transparent; }.pipeline-controls button[aria-pressed="true"] { background:#b6ff4a; color:#101820; }
 main { position: relative; z-index: 0; }
 .hero { min-height: 94vh; padding: 180px 7vw 80px; position: relative; display: flex; flex-direction: column; justify-content: center; }

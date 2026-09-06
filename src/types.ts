@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 export type GlassQuality = "high" | "medium" | "low" | "fallback";
 export type GlassInteractionMode = "idle" | "scrolling" | "resizing" | "settling" | "refreshing";
 export type GlassCapturePolicy = "dynamic" | "occasional" | "idle-only" | "strict-idle-only";
+export type GlassBackdropSourceState = "exact" | "scroll-compensated" | "invalid";
 
 export interface GlassQualityConfig {
   captureScale: number;
@@ -50,6 +51,15 @@ export interface GlassMetrics {
   textureGeneration: number;
   captureGeneration: number | null;
   webglPresentation: "visible" | "hidden";
+  sourceState: GlassBackdropSourceState;
+  captureScrollX: number;
+  captureScrollY: number;
+  scrollDeltaX: number;
+  scrollDeltaY: number;
+  overscanX: number;
+  overscanY: number;
+  overscanRemaining: number;
+  textureUploadMs: number;
   surfaceCount: number;
   textureWidth: number;
   textureHeight: number;
