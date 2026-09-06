@@ -10,15 +10,19 @@ const cards = [
 ];
 
 function Demo() {
-  const [debug, setDebug] = useState(true);
+  const parameters = new URLSearchParams(location.search);
+  const [debug, setDebug] = useState(parameters.has("debug"));
+  const stress = parameters.has("stress");
+  const forceFallback = parameters.has("fallback");
   const [pulse, setPulse] = useState(0);
   useEffect(() => {
+    if (!stress) return;
     const timer = window.setInterval(() => setPulse((value) => value + 1), 2400);
     return () => clearInterval(timer);
-  }, []);
+  }, [stress]);
   return (
-    <GlassProvider debug={debug} className="scene">
-      <PipelineControls />
+    <GlassProvider debug={debug} initialQuality={forceFallback ? "fallback" : undefined} className="scene">
+      {debug ? <PipelineControls stress={stress} onMutate={() => setPulse((value) => value + 1)} /> : null}
       <div className="ambient ambient-a" /><div className="ambient ambient-b" />
       <GlassSurface className="desktop-nav" borderRadius={26}>
         <a className="brand" href="#top">ULG</a>
@@ -48,7 +52,7 @@ function Demo() {
   );
 }
 
-function PipelineControls() {
+function PipelineControls({ stress, onMutate }: { stress: boolean; onMutate: () => void }) {
   const renderer = useGlassRenderer();
   const [view, setView] = useState<GlassDebugView>("normal");
   useEffect(() => renderer?.setDebugView(view), [renderer, view]);
@@ -58,6 +62,8 @@ function PipelineControls() {
       {(["sample", "exaggerated", "normal"] as GlassDebugView[]).map((mode) => (
         <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode}</button>
       ))}
+      <button onClick={onMutate}>mutate page</button>
+      {stress ? <span>stress on</span> : null}
     </aside>
   );
 }

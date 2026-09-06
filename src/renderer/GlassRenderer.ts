@@ -1,13 +1,15 @@
 import { captureViewport } from "../capture/captureManager.js";
 import { adaptQuality } from "../performance/adaptiveQuality.js";
+import { CaptureScheduler } from "../performance/captureScheduler.js";
+import { summarizeFrameTimes } from "../performance/frameMetrics.js";
 import { initialQuality, QUALITY_CONFIG } from "../performance/quality.js";
-import type { GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
+import type { GlassCapturePolicy, GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders.js";
 import { resolveSurfaceOptions } from "./surfaceOptions.js";
 
 interface RendererOptions {
   root: HTMLElement;
-  initialQuality?: Exclude<GlassQuality, "fallback">;
+  initialQuality?: GlassQuality;
   maxDpr?: number;
   mutationDebounceMs?: number;
 }
@@ -23,9 +25,15 @@ interface SurfaceRecord {
 }
 
 const QUALITY_ORDER: GlassQuality[] = ["fallback", "low", "medium", "high"];
+const LIBRARY_OWNED_SELECTOR = "[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]";
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
+}
+
+function isLibraryOwnedNode(node: Node): boolean {
+  const element = node instanceof Element ? node : node.parentElement;
+  return Boolean(element?.closest(LIBRARY_OWNED_SELECTOR));
 }
 
 function shader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -90,25 +98,31 @@ export class GlassRenderer {
   private readonly listeners = new Set<() => void>();
   private readonly rootObserver: ResizeObserver;
   private readonly mutationObserver: MutationObserver;
+  private readonly captureScheduler = new CaptureScheduler();
   private readonly maximumDpr: number;
   private readonly mutationDebounceMs: number;
   private quality: GlassQuality;
   private frameHandle = 0;
   private captureTimer = 0;
   private mutationTimer = 0;
-  private resizeTimer = 0;
-  private scrollEndTimer = 0;
-  private capturing = false;
-  private captureAgain = false;
-  private backdropDirty = true;
+  private interactionSettleTimer = 0;
   private layoutDirty = true;
-  private scrolling = false;
   private destroyed = false;
+  private frameLoopActive = false;
+  private interactionPresentationActive = false;
   private lastCaptureAt = -Infinity;
+  private lastMetricsPublishAt = -Infinity;
   private textureWidth = 1;
   private textureHeight = 1;
   private frameTimes: number[] = [];
   private lastFrameAt = 0;
+  private lastFrameMs = 0;
+  private captureCount = 0;
+  private captureTimestamps: number[] = [];
+  private captureDurations: number[] = [];
+  private lastCaptureMs = 0;
+  private lastKnownScrollX = 0;
+  private lastKnownScrollY = 0;
   private stressSamples = 0;
   private comfortableSamples = 0;
   private currentDpr = 1;
@@ -134,10 +148,12 @@ export class GlassRenderer {
     this.canvas.dataset.liquidGlassRenderer = "";
     Object.assign(this.canvas.style, {
       position: "fixed", inset: "0", width: "100vw", height: "100vh", pointerEvents: "none", zIndex: "1000",
+      opacity: "1", transition: "opacity 110ms ease", willChange: "opacity",
     });
     this.root.prepend(this.canvas);
     if (!this.root.style.isolation) this.root.style.isolation = "isolate";
 
+    const fallbackRequested = this.quality === "fallback";
     let context: WebGL2RenderingContext | null = null;
     try {
       context = this.quality === "fallback" ? null : this.canvas.getContext("webgl2", {
@@ -185,20 +201,25 @@ export class GlassRenderer {
     } else {
       this.quality = "fallback";
       this.canvas.style.display = "none";
-      this.lastRenderError = "WebGL2 context creation failed";
-      this.diagnosticFailure = true;
+      this.lastRenderError = fallbackRequested ? "none (CSS fallback requested)" : "WebGL2 context creation failed";
+      this.diagnosticFailure = !fallbackRequested;
     }
 
     this.metrics = this.makeMetrics();
-    this.rootObserver = new ResizeObserver(this.onResize);
+    this.rootObserver = new ResizeObserver(this.onRootResize);
     this.rootObserver.observe(this.root);
     this.mutationObserver = new MutationObserver(this.onMutation);
     this.mutationObserver.observe(this.root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "src", "hidden"] });
     window.addEventListener("scroll", this.onScroll, { passive: true, capture: true });
+    window.addEventListener("wheel", this.onScrollIntent, { passive: true, capture: true });
+    window.addEventListener("touchmove", this.onScrollIntent, { passive: true, capture: true });
     window.addEventListener("resize", this.onResize, { passive: true });
     window.addEventListener("popstate", this.onRouteChange);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
+    this.lastKnownScrollX = window.scrollX;
+    this.lastKnownScrollY = window.scrollY;
     this.resizeCanvas();
+    if (this.quality !== "fallback") this.captureScheduler.queue("initial");
     console.info("[universal-liquid-glass] renderer diagnostics", this.makeMetrics());
     this.scheduleFrame();
   }
@@ -235,7 +256,7 @@ export class GlassRenderer {
   invalidate(reason = "manual"): void {
     if (this.destroyed || this.quality === "fallback") return;
     this.lastInvalidation = reason;
-    this.backdropDirty = true;
+    this.captureScheduler.queue(reason);
     this.scheduleFrame();
   }
 
@@ -252,9 +273,11 @@ export class GlassRenderer {
     if (this.destroyed) return;
     this.destroyed = true;
     cancelAnimationFrame(this.frameHandle);
-    clearTimeout(this.captureTimer); clearTimeout(this.mutationTimer); clearTimeout(this.resizeTimer); clearTimeout(this.scrollEndTimer);
+    clearTimeout(this.captureTimer); clearTimeout(this.mutationTimer); clearTimeout(this.interactionSettleTimer);
     this.rootObserver.disconnect(); this.mutationObserver.disconnect();
     window.removeEventListener("scroll", this.onScroll, true);
+    window.removeEventListener("wheel", this.onScrollIntent, true);
+    window.removeEventListener("touchmove", this.onScrollIntent, true);
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("popstate", this.onRouteChange);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
@@ -277,8 +300,8 @@ export class GlassRenderer {
     if (!style.position) style.position = "relative";
     style.zIndex = style.zIndex || "1001";
     style.isolation = "isolate";
-    if (this.quality === "fallback") {
-      style.background = this.diagnosticFailure
+    if (this.quality === "fallback" || this.interactionPresentationActive) {
+      style.background = this.quality === "fallback" && this.diagnosticFailure
         ? "repeating-linear-gradient(135deg, rgba(255,0,170,.72) 0 12px, rgba(55,0,75,.72) 12px 24px)"
         : `color-mix(in srgb, ${record.options.tint} ${Math.round(record.options.tintOpacity * 180)}%, transparent)`;
       style.backdropFilter = `blur(${Math.max(8, record.options.blur * 2)}px) saturate(155%)`;
@@ -288,6 +311,13 @@ export class GlassRenderer {
       style.backdropFilter = "none";
       style.setProperty("-webkit-backdrop-filter", "none");
     }
+  }
+
+  private setInteractionPresentation(active: boolean): void {
+    if (this.interactionPresentationActive === active) return;
+    this.interactionPresentationActive = active;
+    this.canvas.style.opacity = active ? "0" : "1";
+    for (const record of this.surfaces.values()) this.styleSurface(record);
   }
 
   private restoreSurface(record: SurfaceRecord): void {
@@ -307,39 +337,95 @@ export class GlassRenderer {
 
   private onMutation = (mutations: MutationRecord[]): void => {
     const relevant = mutations.some((mutation) => {
-      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-      return target && !target.closest("[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]");
+      if (isLibraryOwnedNode(mutation.target)) return false;
+      if (mutation.type !== "childList") return true;
+      const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      return changedNodes.length === 0 || changedNodes.some((node) => !isLibraryOwnedNode(node));
     });
     if (!relevant) return;
     this.layoutDirty = true;
     clearTimeout(this.mutationTimer);
+    const interactionMode = this.captureScheduler.snapshot.interactionMode;
+    if (interactionMode === "scrolling" || interactionMode === "resizing" || interactionMode === "settling") {
+      // Interaction already guarantees one settled refresh. Mark it now so a
+      // separate mutation debounce cannot fire halfway through that capture.
+      this.invalidate("DOM mutation");
+      return;
+    }
     this.mutationTimer = window.setTimeout(() => this.invalidate("DOM mutation"), this.mutationDebounceMs);
   };
 
-  private onScroll = (): void => {
-    // html2canvas temporarily changes/restores clone scroll state. Ignore any
-    // resulting events or capture invalidation becomes self-sustaining.
-    if (this.quality === "fallback" || this.capturing) return;
-    this.scrolling = true;
-    this.layoutDirty = true;
-    this.invalidate("scroll");
-    clearTimeout(this.scrollEndTimer);
-    this.scrollEndTimer = window.setTimeout(() => {
-      this.scrolling = false;
-      this.invalidate("scroll settled");
-    }, 150);
+  private onScrollIntent = (): void => {
+    if (this.quality === "fallback") return;
+    this.beginScrollInteraction();
   };
+
+  private onScroll = (): void => {
+    if (this.quality === "fallback") return;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    // html2canvas can emit scroll events while restoring clone state. Only a
+    // real live-viewport position change starts or extends an interaction.
+    if (scrollX === this.lastKnownScrollX && scrollY === this.lastKnownScrollY) return;
+    this.lastKnownScrollX = scrollX;
+    this.lastKnownScrollY = scrollY;
+    this.beginScrollInteraction("scroll settled");
+  };
+
+  private beginScrollInteraction(reason?: string): void {
+    this.captureScheduler.beginScroll(reason);
+    if (reason) this.lastInvalidation = "scroll pending";
+    this.layoutDirty = true;
+    this.cancelScheduledCapture();
+    this.setInteractionPresentation(true);
+    this.restartInteractionSettleTimer(140);
+    this.scheduleFrame();
+    this.publish(false);
+  }
 
   private onResize = (): void => {
+    if (this.quality === "fallback") return;
+    this.captureScheduler.beginResize();
+    this.lastInvalidation = "resize pending";
     this.layoutDirty = true;
-    this.resizeCanvas();
+    this.cancelScheduledCapture();
+    this.setInteractionPresentation(true);
+    this.restartInteractionSettleTimer(160);
     this.scheduleFrame();
-    clearTimeout(this.resizeTimer);
-    this.resizeTimer = window.setTimeout(() => this.invalidate("resize settled"), 180);
+    this.publish(false);
   };
 
+  private onRootResize = (): void => {
+    this.layoutDirty = true;
+    this.scheduleFrame();
+  };
+
+  private restartInteractionSettleTimer(delayMs: number): void {
+    clearTimeout(this.interactionSettleTimer);
+    this.interactionSettleTimer = window.setTimeout(() => {
+      this.interactionSettleTimer = 0;
+      const wasResizing = this.captureScheduler.snapshot.interactionMode === "resizing";
+      this.captureScheduler.settle();
+      if (wasResizing) this.resizeCanvas();
+      this.layoutDirty = true;
+      if (this.captureScheduler.snapshot.interactionMode === "idle") this.setInteractionPresentation(false);
+      this.scheduleFrame();
+      this.publish(true);
+    }, delayMs);
+  }
+
+  private cancelScheduledCapture(): void {
+    clearTimeout(this.captureTimer);
+    this.captureTimer = 0;
+  }
+
   private onRouteChange = (): void => { window.setTimeout(() => this.invalidate("route change"), 0); };
-  private onVisibilityChange = (): void => { if (!document.hidden) this.invalidate("document visible"); };
+  private onVisibilityChange = (): void => {
+    this.frameTimes = [];
+    this.lastFrameAt = 0;
+    this.lastFrameMs = 0;
+    if (!document.hidden) this.invalidate("document visible");
+  };
   private onContextLost = (event: Event): void => {
     event.preventDefault();
     this.lastRenderError = "WebGL context lost";
@@ -355,28 +441,40 @@ export class GlassRenderer {
     const height = Math.max(1, Math.round(window.innerHeight * this.currentDpr));
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width; this.canvas.height = height;
-      this.backdropDirty = true;
     }
   }
 
   private scheduleFrame(): void {
     if (this.destroyed || this.frameHandle || this.quality === "fallback" || document.hidden) return;
+    if (!this.frameLoopActive) {
+      this.frameLoopActive = true;
+      this.lastFrameAt = 0;
+    }
     this.frameHandle = requestAnimationFrame(this.frame);
   }
 
   private frame = (now: number): void => {
     this.frameHandle = 0;
-    if (this.lastFrameAt > 0 && now - this.lastFrameAt < 80) {
-      this.frameTimes.push(now - this.lastFrameAt);
-      if (this.frameTimes.length > 45) this.frameTimes.shift();
+    if (this.lastFrameAt > 0) {
+      this.lastFrameMs = now - this.lastFrameAt;
+      this.frameTimes.push(this.lastFrameMs);
+      if (this.frameTimes.length > 120) this.frameTimes.shift();
     }
     this.lastFrameAt = now;
     if (this.layoutDirty) this.measureSurfaces();
     const hasVisibleSurface = this.hasVisibleSurface();
-    if (this.backdropDirty && hasVisibleSurface) this.requestCapture(now);
-    this.draw();
-    this.publish();
-    if (this.scrolling || this.capturing || (this.backdropDirty && hasVisibleSurface)) this.scheduleFrame();
+    if (hasVisibleSurface) this.requestCapture(now);
+    if (!this.interactionPresentationActive && !this.captureScheduler.snapshot.captureInFlight) this.draw();
+    this.publish(false, now);
+    const state = this.captureScheduler.snapshot;
+    const interactionActive = state.interactionMode === "scrolling" || state.interactionMode === "resizing";
+    const pendingCaptureReady = Boolean(state.pendingCaptureReason && hasVisibleSurface && !this.captureTimer);
+    if (interactionActive || state.captureInFlight || pendingCaptureReady) this.scheduleFrame();
+    else {
+      this.frameLoopActive = false;
+      this.lastFrameAt = 0;
+      this.publish(true, now);
+    }
   };
 
   private measureSurfaces(): void {
@@ -392,31 +490,37 @@ export class GlassRenderer {
   }
 
   private requestCapture(now: number): void {
-    if (this.capturing) { this.captureAgain = true; return; }
+    const state = this.captureScheduler.snapshot;
+    if (state.captureInFlight || !state.pendingCaptureReason) return;
+    if (state.interactionMode === "scrolling" || state.interactionMode === "resizing" || state.interactionMode === "refreshing") return;
     const config = QUALITY_CONFIG[this.quality];
-    const interval = config.minCaptureIntervalMs * (this.scrolling ? 1.35 : 1);
+    const interval = config.minCaptureIntervalMs;
     const remaining = interval - (now - this.lastCaptureAt);
     if (remaining > 0) {
       if (!this.captureTimer) this.captureTimer = window.setTimeout(() => { this.captureTimer = 0; this.scheduleFrame(); }, remaining);
       return;
     }
-    this.backdropDirty = false;
+    const reason = this.captureScheduler.beginCapture();
+    if (!reason) return;
     this.lastCaptureAt = now;
+    this.lastInvalidation = reason;
+    this.captureCount += 1;
+    this.captureTimestamps.push(performance.now());
     void this.capture();
   }
 
   private async capture(): Promise<void> {
     if (!this.gl || !this.texture || this.quality === "fallback") return;
-    this.capturing = true;
     const started = performance.now();
+    let durationRecorded = false;
     const config = QUALITY_CONFIG[this.quality];
-    const scale = config.captureScale * (this.scrolling ? 0.72 : 1);
+    const scale = config.captureScale;
     this.currentCaptureScale = scale;
     try {
       const result = await captureViewport({
         root: this.root,
         scale,
-        ignore: (element) => element.hasAttribute("data-liquid-glass-renderer") || element.hasAttribute("data-liquid-glass-surface") || element.hasAttribute("data-liquid-glass-debug"),
+        ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
       });
       if (this.destroyed) return;
       const probe = this.probeSource(result);
@@ -446,8 +550,11 @@ export class GlassRenderer {
         console.error("[universal-liquid-glass] texture upload failed", this.lastRenderError);
       }
       const duration = performance.now() - started;
-      this.metrics = { ...this.metrics, captureMs: duration, captureCount: this.metrics.captureCount + 1, captureScale: scale, textureWidth: result.width, textureHeight: result.height };
+      this.recordCaptureDuration(duration);
+      durationRecorded = true;
       this.evaluateQuality(duration);
+      const interactionMode = this.captureScheduler.snapshot.interactionMode;
+      if (interactionMode !== "scrolling" && interactionMode !== "resizing") this.draw();
       if (!this.loggedFirstCapture) {
         this.loggedFirstCapture = true;
         console.info("[universal-liquid-glass] first backdrop captured", this.makeMetrics());
@@ -460,8 +567,10 @@ export class GlassRenderer {
       this.stressSamples += 1;
       if (this.stressSamples >= 3) this.degrade();
     } finally {
-      this.capturing = false;
-      if (this.captureAgain) { this.captureAgain = false; this.backdropDirty = true; }
+      if (!durationRecorded) this.recordCaptureDuration(performance.now() - started);
+      this.captureScheduler.finishCapture();
+      if (this.captureScheduler.snapshot.interactionMode === "idle") this.setInteractionPresentation(false);
+      this.publish(true);
       this.scheduleFrame();
     }
   }
@@ -525,8 +634,8 @@ export class GlassRenderer {
   }
 
   private evaluateQuality(captureMs: number): void {
-    const frameMs = this.averageFrameMs();
-    const proposed = adaptQuality(this.quality, { averageFrameMs: frameMs, captureMs });
+    const frameTiming = summarizeFrameTimes(this.frameTimes);
+    const proposed = adaptQuality(this.quality, { averageFrameMs: frameTiming.averageFrameMs, p95FrameMs: frameTiming.p95FrameMs, captureMs });
     if (QUALITY_ORDER.indexOf(proposed) < QUALITY_ORDER.indexOf(this.quality)) {
       this.stressSamples += 1; this.comfortableSamples = 0;
       if (this.stressSamples >= (this.quality === "low" ? 3 : 2)) this.setQuality(proposed);
@@ -545,21 +654,43 @@ export class GlassRenderer {
     if (next === this.quality) return;
     this.quality = next; this.stressSamples = 0; this.comfortableSamples = 0;
     if (next === "fallback") {
+      this.cancelScheduledCapture();
+      clearTimeout(this.interactionSettleTimer);
+      this.interactionSettleTimer = 0;
+      this.captureScheduler.reset();
+      this.interactionPresentationActive = false;
       this.canvas.style.display = "none";
       for (const record of this.surfaces.values()) this.styleSurface(record);
     } else {
-      this.resizeCanvas(); this.backdropDirty = true; this.scheduleFrame();
+      this.canvas.style.display = "block";
+      this.resizeCanvas();
+      this.layoutDirty = true;
+      this.scheduleFrame();
     }
     this.publish();
   }
 
-  private averageFrameMs(): number {
-    if (!this.frameTimes.length) return 0;
-    return this.frameTimes.reduce((sum, value) => sum + value, 0) / this.frameTimes.length;
+  private recordCaptureDuration(duration: number): void {
+    this.lastCaptureMs = duration;
+    this.captureDurations.push(duration);
+    if (this.captureDurations.length > 30) this.captureDurations.shift();
+  }
+
+  private capturePolicy(): GlassCapturePolicy {
+    if (this.lastCaptureMs <= 25) return "dynamic";
+    if (this.lastCaptureMs <= 40) return "occasional";
+    if (this.lastCaptureMs <= 60) return "idle-only";
+    return "strict-idle-only";
   }
 
   private makeMetrics(): GlassMetrics {
-    const averageFrameMs = this.averageFrameMs();
+    const { averageFrameMs, p95FrameMs, worstFrameMs, fps } = summarizeFrameTimes(this.frameTimes);
+    const averageCaptureMs = this.captureDurations.length
+      ? this.captureDurations.reduce((sum, value) => sum + value, 0) / this.captureDurations.length
+      : 0;
+    const recentCaptureCutoff = performance.now() - 10_000;
+    this.captureTimestamps = this.captureTimestamps.filter((timestamp) => timestamp >= recentCaptureCutoff);
+    const scheduling = this.captureScheduler.snapshot;
     const firstSurface = Array.from(this.surfaces.values()).find(({ rect }) =>
       rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= innerHeight,
     );
@@ -570,9 +701,14 @@ export class GlassRenderer {
       : "none";
     return {
       mode: this.quality === "fallback" ? "fallback" : "webgl2", quality: this.quality,
-      averageFrameMs, fps: averageFrameMs > 0 ? Math.min(999, 1000 / averageFrameMs) : 0,
-      captureMs: this.metrics?.captureMs ?? 0, captureScale: this.currentCaptureScale || QUALITY_CONFIG[this.quality].captureScale,
-      captureCount: this.metrics?.captureCount ?? 0, surfaceCount: this.surfaces.size,
+      averageFrameMs, lastFrameMs: this.lastFrameMs, p95FrameMs, worstFrameMs,
+      fps,
+      captureMs: this.lastCaptureMs, averageCaptureMs,
+      captureScale: this.currentCaptureScale || QUALITY_CONFIG[this.quality].captureScale,
+      captureCount: this.captureCount, capturesThisScrollGesture: scheduling.capturesThisScrollGesture,
+      capturesLast10Seconds: this.captureTimestamps.length, interactionMode: scheduling.interactionMode,
+      capturePolicy: this.capturePolicy(), pendingCaptureReason: scheduling.pendingCaptureReason,
+      captureInFlight: scheduling.captureInFlight, surfaceCount: this.surfaces.size,
       textureWidth: this.textureWidth, textureHeight: this.textureHeight,
       canvasWidth: this.canvas.width, canvasHeight: this.canvas.height, dpr: this.currentDpr,
       viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
@@ -582,8 +718,10 @@ export class GlassRenderer {
     };
   }
 
-  private publish(): void {
-    this.metrics = { ...this.makeMetrics(), captureMs: this.metrics.captureMs, captureCount: this.metrics.captureCount };
+  private publish(force = true, now = performance.now()): void {
+    if (!force && now - this.lastMetricsPublishAt < 100) return;
+    this.lastMetricsPublishAt = now;
+    this.metrics = this.makeMetrics();
     for (const listener of this.listeners) listener();
   }
 }

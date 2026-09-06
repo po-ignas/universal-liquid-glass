@@ -7,20 +7,29 @@ Environment: macOS workspace, Node 24.9.0, npm 11.6.0.
 | Check | Result |
 |---|---|
 | Strict TypeScript | pass |
-| Unit tests | 2/2 pass |
+| Unit tests | pass |
 | Production demo build | pass |
 | npm audit | 0 vulnerabilities |
-| Production demo bundle | 428.86 kB JS / 119.63 kB gzip (includes React and DOM capture dependency) |
 
-## Browser performance procedure
+## Scroll scheduling milestone
 
-Run `npm run demo`, open `http://127.0.0.1:5173/?debug=1`, and record the overlay after each case:
+Measured in the Chromium in-app browser at a 1280×720 CSS viewport. The WebGL canvas was 2560×1440 at DPR 2 and the captured backdrop was 960×540 at 0.75 scale.
 
-1. Idle for 10 seconds: capture count must stop changing except for the demo's deliberate 2.4-second DOM update.
-2. Normal scroll for 10 seconds: confirm passive responsive scrolling, throttled capture count, and a final settled capture.
-3. Fast scroll end-to-end three times: record worst capture duration and final tier.
-4. Resize continuously for five seconds: confirm no capture storm and one final settled capture.
-5. Let the demo DOM-update ticker run for 30 seconds: confirm one coalesced capture per update and stable texture dimensions.
-6. In browser task manager/devtools, compare memory before and after five minutes; same-sized uploads should not repeatedly allocate GPU texture storage.
+| Case | Captures during interaction | Captures after settle | Result |
+|---|---:|---:|---|
+| Slow continuous scroll, ~5 seconds | 0 | 1 | pass |
+| Aggressive bidirectional scroll, ~5 seconds | 0 | 1 | pass |
+| Four short gestures | 0 per gesture | 1 per gesture | pass |
+| Relevant idle mutation | n/a | 1 coalesced | pass |
+| Mutation during continuous scroll | 0 | 1 coalesced | pass |
+| Continuous viewport resize | 0 | 1 | pass |
+| Forced CSS fallback | 0 | 0 | pass |
+| Normal demo without debug/stress | 0 | 1 | pass |
 
-The repository environment did not expose its Chrome automation connection during this implementation pass. Browser FPS, capture time, scroll feel, screenshots, and cross-engine results are therefore intentionally not fabricated and remain to be filled in after an interactive Chrome/Safari/Firefox run.
+Observed settled DOM-capture durations were 92.0–111.2 ms in the scroll cases (an initial capture reached 138.3 ms), so the renderer correctly selected `strict-idle-only` capture policy without reducing WebGL refraction quality. During the measured scroll gestures the rolling frame average was 8.3 ms, p95 was 8.9–9.1 ms, and worst was 9.3 ms. The demo ran at the HIGH shader tier with a linked WebGL2 program, complete framebuffer, non-empty source texture, and no reported WebGL error.
+
+The remaining unavoidable hitch is the single 90–111 ms DOM rasterization after settle. It is no longer on the active-scroll path, but reducing that settled cost would require a separately benchmarked capture-zone or non-DOM source architecture. Safari and Firefox were not available in this pass and still require cross-engine validation.
+
+## Reproduction
+
+Run `npm run demo`, then open `http://127.0.0.1:5173/?debug`. Add `&stress` for periodic relevant DOM mutations or `&fallback` to force the CSS fallback.

@@ -1,6 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 
 export type GlassQuality = "high" | "medium" | "low" | "fallback";
+export type GlassInteractionMode = "idle" | "scrolling" | "resizing" | "settling" | "refreshing";
+export type GlassCapturePolicy = "dynamic" | "occasional" | "idle-only" | "strict-idle-only";
 
 export interface GlassQualityConfig {
   captureScale: number;
@@ -29,10 +31,20 @@ export interface GlassMetrics {
   mode: "webgl2" | "fallback";
   quality: GlassQuality;
   averageFrameMs: number;
+  lastFrameMs: number;
+  p95FrameMs: number;
+  worstFrameMs: number;
   fps: number;
   captureMs: number;
+  averageCaptureMs: number;
   captureScale: number;
   captureCount: number;
+  capturesThisScrollGesture: number;
+  capturesLast10Seconds: number;
+  interactionMode: GlassInteractionMode;
+  capturePolicy: GlassCapturePolicy;
+  pendingCaptureReason: string | null;
+  captureInFlight: boolean;
   surfaceCount: number;
   textureWidth: number;
   textureHeight: number;
@@ -61,7 +73,7 @@ export interface GlassProviderProps {
   /** Shows a small live diagnostics panel. Disabled by default. */
   debug?: boolean;
   /** Override the conservative capability-based starting tier. */
-  initialQuality?: Exclude<GlassQuality, "fallback">;
+  initialQuality?: GlassQuality;
   /** Highest DPR used by the shared canvas. */
   maxDpr?: number;
   /** Coalesces background DOM mutations. */
