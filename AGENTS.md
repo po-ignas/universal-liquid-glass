@@ -55,6 +55,20 @@ After scrolling settles:
 
 If a capture is already running when interaction starts, do not queue an unbounded chain of follow-up captures.
 
+## Texture freshness contract
+
+The renderer now tracks viewport, capture, uploaded-texture, and completed-draw generations.
+
+This is a correctness invariant, not optional complexity.
+
+- Any viewport/content invalidation makes the old WebGL backdrop stale.
+- An asynchronous capture that no longer matches the current viewport generation must be discarded.
+- A stale capture must never become the visible current texture.
+- WebGL may become visible only after the current generation has been captured, uploaded, drawn successfully, and the scheduler is fully idle.
+- CSS glass remains active while scrolling, settling, refreshing, resizing, dirty, failed, or otherwise not provably fresh.
+
+Do not weaken this contract to simplify visual tuning.
+
 ## Performance thresholds
 
 Do not treat long capture times as acceptable simply because the library is already on LOW quality.
@@ -146,8 +160,30 @@ Before implementing a substantial subsystem:
 
 Do not stop at planning if the task asks for implementation.
 
-## Current performance milestone
+## Milestone status
 
-The active implementation plan is documented in `PERFORMANCE_PLAN.md`.
+### Milestone 1 — scroll performance
 
-Codex should treat the acceptance criteria in that file as the next milestone before spending time on visual shader tuning.
+Considered successful in Chromium unless a reproducible regression is found.
+
+The active-scroll path performs zero DOM captures and uses interaction-safe CSS presentation. One coalesced DOM capture occurs after settle.
+
+### Milestone 2 — texture freshness
+
+Considered successful in Chromium unless a reproducible stale-frame case is found.
+
+Obsolete asynchronous captures are generation-checked and discarded. WebGL presentation requires a current uploaded-and-drawn texture and an idle scheduler.
+
+### Milestone 3 — ACTIVE: optical calibration
+
+The active implementation plan is `OPTICAL_TUNING.md`.
+
+Codex must read that file before making the next visual changes.
+
+The immediate problem is excessive lens displacement on shallow navigation surfaces, especially the mobile header over very large typography. The renderer should retain real refraction while concentrating strong displacement toward the glass edge and keeping the center substantially calmer.
+
+**Do not casually rewrite Milestone 1 or Milestone 2 architecture while tuning the shader.**
+
+After each meaningful optical change, regression-test scrolling and texture freshness.
+
+`PERFORMANCE_PLAN.md` remains historical/technical context and its performance acceptance criteria remain mandatory guardrails.
