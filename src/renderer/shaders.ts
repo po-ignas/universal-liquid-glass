@@ -106,13 +106,31 @@ void main() {
   vec2 lensDirection = normalize(mix(radial, normal, smoothstep(0.12, 0.75, edge)) + vec2(0.0001));
   float debugStrength = u_debugMode > 1.5 ? 4.5 : 1.0;
   float opticalThickness = min(thickness, 96.0);
+
+  // A separate low-frequency volume term gives the material a coherent body
+  // without widening the calibrated edge band. On shallow bars the short axis
+  // does most of the bending; long-axis movement returns only at the endcaps.
+  vec2 bodyPosition = clamp(radial, vec2(-1.0), vec2(1.0));
+  vec2 bodyCurve = bodyPosition * (vec2(1.0) - bodyPosition * bodyPosition);
+  float bodyInterior = smoothstep(0.0, max(edgeWidth * 1.35, 1.0), depth);
+  float endcapStart = clamp(1.0 - (u_radius / max(halfSize.x, 1.0)), 0.56, 0.94);
+  float endcap = smoothstep(
+    max(endcapStart - 0.10, 0.0),
+    min(endcapStart + 0.025, 0.985),
+    abs(bodyPosition.x));
+  float bodyVerticalStrength = mix(0.12, 0.22, shallowSurface);
+  float bodyHorizontalStrength = mix(0.12, mix(0.025, 0.18, endcap), shallowSurface);
+  vec2 bodyPixels = vec2(
+    bodyCurve.x * bodyHorizontalStrength,
+    bodyCurve.y * bodyVerticalStrength
+  ) * u_refraction * debugStrength * opticalThickness * opticalProfile * bodyInterior;
   float lensPixels = u_refraction * debugStrength * opticalThickness * opticalProfile
     * (0.0005 + edge * 0.058 + lip * 0.060);
-  vec2 offset = -lensDirection * lensPixels / u_sourceSize;
-  float scatteringProfile = mix(0.22, 0.72, opticalProfile);
-  float scatteringShape = mix(0.08, 1.0, pow(clamp(edge * 0.70 + lip * 0.30, 0.0, 1.0), 1.3));
+  vec2 offset = -(bodyPixels + lensDirection * lensPixels) / u_sourceSize;
+  float scatteringProfile = mix(0.34, 0.78, opticalProfile);
+  float scatteringShape = mix(0.28, 1.0, pow(clamp(edge * 0.70 + lip * 0.30, 0.0, 1.0), 1.3));
   vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0)))
-    * max(u_blur * scatteringProfile * scatteringShape, 0.15);
+    * max(u_blur * scatteringProfile * scatteringShape, 0.30);
   vec3 color = backdrop(v_uv + offset, blurStep);
   if (u_chromatic > 0.001) {
     float chromaticShape = pow(clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0), 1.5);
@@ -123,6 +141,9 @@ void main() {
     color.b = mix(color.b, blueSample.b, 0.16);
   }
   float rim = clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0);
+  float bodyContrast = mix(0.94, 0.97, rim);
+  float transmissionLift = mix(0.035, 0.015, rim);
+  color = color * bodyContrast + vec3(transmissionLift);
   float fresnel = pow(rim, 2.1);
   float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 7.0);
   float specular = directional * pow(lip, 0.75) * 0.22;
