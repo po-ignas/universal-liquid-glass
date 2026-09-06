@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
-import { GlassProvider, GlassSurface } from "../src/index.js";
+import { GlassProvider, GlassSurface, useGlassRenderer, type GlassDebugView } from "../src/index.js";
 import "./demo.css";
 
 const cards = [
@@ -10,7 +10,7 @@ const cards = [
 ];
 
 function Demo() {
-  const [debug, setDebug] = useState(new URLSearchParams(location.search).has("debug"));
+  const [debug, setDebug] = useState(true);
   const [pulse, setPulse] = useState(0);
   useEffect(() => {
     const timer = window.setInterval(() => setPulse((value) => value + 1), 2400);
@@ -18,6 +18,7 @@ function Demo() {
   }, []);
   return (
     <GlassProvider debug={debug} className="scene">
+      <PipelineControls />
       <div className="ambient ambient-a" /><div className="ambient ambient-b" />
       <GlassSurface className="desktop-nav" borderRadius={26}>
         <a className="brand" href="#top">ULG</a>
@@ -44,6 +45,20 @@ function Demo() {
         <section id="support" className="bands"><div>CHROMIUM</div><div>SAFARI</div><div>FIREFOX</div></section>
       </main>
     </GlassProvider>
+  );
+}
+
+function PipelineControls() {
+  const renderer = useGlassRenderer();
+  const [view, setView] = useState<GlassDebugView>("normal");
+  useEffect(() => renderer?.setDebugView(view), [renderer, view]);
+  return (
+    <aside data-liquid-glass-debug className="pipeline-controls">
+      <strong>Backdrop pipeline</strong>
+      {(["sample", "exaggerated", "normal"] as GlassDebugView[]).map((mode) => (
+        <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode}</button>
+      ))}
+    </aside>
   );
 }
 

@@ -36,7 +36,23 @@ export interface GlassMetrics {
   surfaceCount: number;
   textureWidth: number;
   textureHeight: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  dpr: number;
+  webglVersion: string;
+  shaderStatus: string;
+  framebufferStatus: string;
+  sourceStatus: string;
+  debugView: GlassDebugView;
+  surfaceRect: string;
+  sampledUvs: string;
+  lastInvalidation: string;
+  lastRenderError: string;
 }
+
+export type GlassDebugView = "normal" | "sample" | "exaggerated";
 
 export interface GlassProviderProps {
   children?: ReactNode;

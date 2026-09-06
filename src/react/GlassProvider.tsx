@@ -9,6 +9,9 @@ const GlassContext = createContext<GlassRenderer | null>(null);
 const EMPTY_METRICS: GlassMetrics = {
   mode: "fallback", quality: "fallback", averageFrameMs: 0, fps: 0, captureMs: 0,
   captureScale: 0, captureCount: 0, surfaceCount: 0, textureWidth: 0, textureHeight: 0,
+  canvasWidth: 0, canvasHeight: 0, viewportWidth: 0, viewportHeight: 0, dpr: 1,
+  webglVersion: "unavailable", shaderStatus: "not initialized", framebufferStatus: "not checked",
+  sourceStatus: "not captured", debugView: "normal", surfaceRect: "none", sampledUvs: "none", lastInvalidation: "none", lastRenderError: "none",
 };
 
 function DebugOverlay({ renderer }: { renderer: GlassRenderer | null }) {
@@ -24,7 +27,7 @@ function DebugOverlay({ renderer }: { renderer: GlassRenderer | null }) {
       font: "11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace", pointerEvents: "none",
       boxShadow: "0 8px 30px rgba(0,0,0,.25)", whiteSpace: "pre",
     }}>
-      {`${metrics.mode} · ${metrics.quality.toUpperCase()}\n${metrics.fps.toFixed(0)} fps · ${metrics.averageFrameMs.toFixed(1)} ms frame\n${metrics.captureMs.toFixed(1)} ms capture · ${metrics.captureScale.toFixed(2)}×\n${metrics.captureCount} captures · ${metrics.surfaceCount} surfaces\n${metrics.textureWidth}×${metrics.textureHeight} texture`}
+      {`renderer: ${metrics.mode} · ${metrics.quality.toUpperCase()} · ${metrics.debugView}\nWebGL version: ${metrics.webglVersion}\nshader status: ${metrics.shaderStatus}\nsource texture: ${metrics.textureWidth}×${metrics.textureHeight} (${metrics.sourceStatus})\ncanvas: ${metrics.canvasWidth}×${metrics.canvasHeight} · viewport: ${metrics.viewportWidth}×${metrics.viewportHeight}\nDPR: ${metrics.dpr.toFixed(2)} · capture scale: ${metrics.captureScale.toFixed(2)}\nframebuffer: ${metrics.framebufferStatus} · fallback: ${metrics.mode === "fallback"}\nsurface rect: ${metrics.surfaceRect}\nsampled UV: ${metrics.sampledUvs}\nlast invalidation: ${metrics.lastInvalidation}\nWebGL/last error: ${metrics.lastRenderError}\n${metrics.fps.toFixed(0)} fps · ${metrics.averageFrameMs.toFixed(1)} ms frame · ${metrics.captureMs.toFixed(1)} ms capture · ${metrics.captureCount} captures`}
     </output>
   );
 }
