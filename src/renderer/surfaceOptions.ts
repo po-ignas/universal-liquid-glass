@@ -3,10 +3,10 @@ import type { GlassSurfaceOptions } from "../types.js";
 export const DEFAULT_SURFACE_OPTIONS: Required<GlassSurfaceOptions> = {
   borderRadius: 24,
   refraction: 1,
-  blur: 3.5,
-  chromaticAberration: 0.55,
+  blur: 2.5,
+  chromaticAberration: 0.32,
   tint: "#ffffff",
-  tintOpacity: 0.075,
+  tintOpacity: 0.045,
 };
 
 /** Preserve renderer defaults when React forwards an omitted prop as undefined. */

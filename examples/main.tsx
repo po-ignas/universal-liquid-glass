@@ -45,6 +45,21 @@ function Demo() {
         <section id="work" className="grid">
           {cards.map(([title, a, b], index) => <article key={title} style={{ "--a": a, "--b": b } as CSSProperties}><span>0{index + 1}</span><h2>{title}</h2><p>Sharp rules and contrasting gradients make lens displacement easy to verify.</p></article>)}
         </section>
+        <section className="glass-square-stage" aria-label="Square glass surface demonstration">
+          <div className="glass-square-art" aria-hidden="true"><i /><i /><i /></div>
+          <GlassSurface
+            className="glass-square"
+            borderRadius={24}
+            refraction={0.8}
+            blur={18}
+            chromaticAberration={0.35}
+            tint="#ffffff"
+            tintOpacity={0.06}
+          >
+            <strong>GLASS</strong>
+            <span>0.8 refraction</span>
+          </GlassSurface>
+        </section>
         <section id="details" className="statement"><p>PERFORMANCE FIRST</p><h2>When the page gets busy,<br />the glass gets cheaper.</h2><div className="steps"><span>HIGH</span><b>→</b><span>MEDIUM</span><b>→</b><span>LOW</span><b>→</b><span>CSS</span></div></section>
         <section id="support" className="bands"><div>CHROMIUM</div><div>SAFARI</div><div>FIREFOX</div></section>
       </main>

@@ -87,12 +87,12 @@ void main() {
   float normalizedThickness = clamp(thickness / 96.0, 0.5, 1.0);
   float shallowSurface = smoothstep(2.5, 7.5, aspectRatio);
   float opticalProfile = normalizedThickness * mix(1.0, 0.58, shallowSurface);
-  float edgeWidth = clamp(thickness * mix(0.21, 0.30, opticalProfile), 7.0, 22.0);
+  float edgeWidth = clamp(thickness * mix(0.12, 0.20, opticalProfile), 4.5, 16.0);
   float edgeBase = 1.0 - smoothstep(0.0, edgeWidth, depth);
-  float edge = pow(clamp(edgeBase, 0.0, 1.0), 2.0);
-  float lipWidth = clamp(thickness * 0.06, 1.5, 5.0);
+  float edge = pow(clamp(edgeBase, 0.0, 1.0), 3.4);
+  float lipWidth = clamp(thickness * 0.035, 1.25, 3.5);
   float lip = exp(-depth / lipWidth);
-  float refractionStrength = opticalProfile * clamp(edge * 0.78 + lip * 0.22, 0.0, 1.0);
+  float refractionStrength = opticalProfile * clamp(edge * 0.68 + lip * 0.32, 0.0, 1.0);
   if (u_debugMode > 2.5) {
     outColor = vec4(vec3(refractionStrength) * alpha, alpha);
     return;
@@ -107,25 +107,27 @@ void main() {
   float debugStrength = u_debugMode > 1.5 ? 4.5 : 1.0;
   float opticalThickness = min(thickness, 96.0);
   float lensPixels = u_refraction * debugStrength * opticalThickness * opticalProfile
-    * (0.004 + edge * 0.095 + lip * 0.028);
+    * (0.0005 + edge * 0.058 + lip * 0.060);
   vec2 offset = -lensDirection * lensPixels / u_sourceSize;
-  float scatteringProfile = mix(0.45, 1.0, opticalProfile);
-  float scatteringShape = mix(0.34, 1.0, clamp(edge * 0.82 + lip * 0.18, 0.0, 1.0));
+  float scatteringProfile = mix(0.22, 0.72, opticalProfile);
+  float scatteringShape = mix(0.08, 1.0, pow(clamp(edge * 0.70 + lip * 0.30, 0.0, 1.0), 1.3));
   vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0)))
-    * max(u_blur * scatteringProfile * scatteringShape, 0.45);
+    * max(u_blur * scatteringProfile * scatteringShape, 0.15);
   vec3 color = backdrop(v_uv + offset, blurStep);
   if (u_chromatic > 0.001) {
-    vec2 split = lensDirection * edge * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 6.0 : 1.8) / u_sourceSize;
+    float chromaticShape = pow(clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0), 1.5);
+    vec2 split = lensDirection * chromaticShape * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 4.0 : 0.85) / u_sourceSize;
     vec3 redSample = texture(u_backdrop, clamp(v_uv + offset + split, 0.0, 1.0)).rgb;
     vec3 blueSample = texture(u_backdrop, clamp(v_uv + offset - split, 0.0, 1.0)).rgb;
-    color.r = mix(color.r, redSample.r, 0.34);
-    color.b = mix(color.b, blueSample.b, 0.34);
+    color.r = mix(color.r, redSample.r, 0.16);
+    color.b = mix(color.b, blueSample.b, 0.16);
   }
-  float fresnel = pow(clamp(edge, 0.0, 1.0), 2.6);
-  float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 5.0);
-  float specular = directional * (1.0 - smoothstep(1.0, 10.0, depth)) * 0.34;
+  float rim = clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0);
+  float fresnel = pow(rim, 2.1);
+  float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 7.0);
+  float specular = directional * pow(lip, 0.75) * 0.22;
   color = mix(color, u_tint, u_tintOpacity);
-  color += vec3(fresnel * 0.075 + specular);
-  color -= vec3(max(dot(normal, normalize(vec2(0.55, 0.83))), 0.0) * lip * 0.035);
+  color += vec3(fresnel * 0.045 + specular);
+  color -= vec3(max(dot(normal, normalize(vec2(0.55, 0.83))), 0.0) * lip * 0.025);
   outColor = vec4(color * alpha, alpha);
 }`;
