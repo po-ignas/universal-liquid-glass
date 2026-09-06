@@ -2,435 +2,514 @@
 
 ## Status
 
-Milestone 4: **ACTIVE — eliminate temporary CSS glass on capable devices**
+Milestone 4: **ACTIVE — continuous WebGL on ordinary capable devices**
 
-The product requirement has changed and overrides the previous hybrid interaction strategy.
+This milestone builds directly on the existing implementation. **Do not restart or broadly refactor the library.**
 
-The desired experience is:
+Preserve:
+
+- shared WebGL2 renderer
+- existing liquid-glass shader and optical tuning
+- React `GlassProvider` / `GlassSurface` API
+- texture upload/draw path
+- viewport/capture/texture/drawn generation safeguards
+- diagnostics infrastructure
+- current CSS fallback implementation as an emergency whole-session fallback
+- existing demo and regression tests
+
+The narrow problem is now:
+
+> Feed the existing WebGL renderer sufficiently current backdrop pixels during scrolling, cheaply enough that ordinary devices can keep real refraction visible continuously.
+
+Desired capable-device experience:
 
 ```text
-capable device
-IDLE -> real WebGL glass
-SCROLL -> real WebGL glass
-STOP -> real WebGL glass
+IDLE -> WebGL
+SCROLL -> WebGL
+STOP -> WebGL
 ```
 
-There must be no visible mode switch between WebGL and CSS on capable hardware.
+There must be no WebGL -> CSS -> WebGL interaction transition on continuous-capable devices.
 
-CSS glass is permitted only as a **whole-session fallback** when the runtime determines that continuous real glass cannot be sustained safely on the device/browser.
-
-That fallback should remain CSS in both idle and scrolling states. Do not switch back and forth between CSS and WebGL during normal interaction on such devices.
+CSS is only a stable whole-session fallback for genuinely unsupported/unsafe devices.
 
 ---
 
-# 1. Product requirement
+# 1. Success floor
 
-The current hybrid architecture is performant but visually unsatisfactory because users can perceive:
+Do not define "capable" so narrowly that only flagship hardware qualifies.
 
-```text
-real glass
--> scroll begins
--> CSS approximation
--> scroll stops
--> real glass returns
-```
+Target continuous WebGL for:
 
-That transition makes the effect feel simulated rather than native/premium.
+- ordinary modern Chromium desktop/laptop
+- Firefox desktop
+- Safari macOS
+- ordinary recent Android Chrome phones
+- ordinary recent iPhones/Safari
 
-For supported/capable devices, this milestone must remove that transition entirely.
+Actual support must be measured. Do not claim a platform passed without testing it.
 
-The core success condition is:
+If a typical recent mid-range phone falls back solely because our backdrop acquisition architecture is inefficient, Milestone 4 is **not solved**.
 
-> **The same WebGL glass material remains visible continuously before, during, and after scrolling.**
+Fallback is intended for genuinely weak/old/unsupported or unstable configurations, not as the normal mobile experience.
 
 ---
 
-# 2. Safety requirement
+# 2. What is already solved
 
-Continuous WebGL glass must not come at the cost of unusable phones or severe jank.
+Do not spend milestone time re-solving these unless a regression is proven:
 
-The runtime must decide between two stable modes:
+- WebGL2 can render the glass material efficiently
+- shader compiles and produces genuine refraction
+- optical appearance has been tuned
+- expensive DOM capture was identified as the major bottleneck
+- scroll event handling can remain smooth when expensive capture is removed
+- stale asynchronous captures are protected by generation tracking
+- current CSS fallback exists
 
-```text
-MODE A — continuous-webgl
-real refraction at idle + scroll + settle
-
-MODE B — css-fallback
-CSS presentation at idle + scroll + settle
-```
-
-Avoid a third mode where the app changes rendering technology during each scroll gesture.
-
-The decision may adapt downward if the device cannot sustain MODE A, but once downgraded to CSS fallback it should remain stable for the session unless there is a strong reason to retry later.
+The research problem is **backdrop acquisition and source management**, not the glass shader.
 
 ---
 
-# 3. First task: replace assumptions with benchmarks
+# 3. Time-boxed capture benchmark FIRST
 
-Do not assume `html2canvas-pro` is the only backdrop acquisition path.
+Before integrating another screenshot library deeply, build a small capture benchmark harness around the existing demo.
 
-Research and benchmark current alternatives for repeated viewport capture, including where practical:
+Benchmark only enough to answer: **which available path can provide correct backdrop pixels fastest and with the least main-thread disruption?**
 
-- current `html2canvas-pro` path
-- `html2canvas-pro` foreignObject rendering mode
-- `modern-screenshot`
-- reusable/singleton-context paths from screenshot libraries
-- worker-assisted paths where supported
-- SnapDOM or equivalent DOM->SVG/foreignObject implementations
-- native/emerging HTML-to-canvas APIs such as `drawElementImage()` / HTML-in-Canvas where actually available
-- any mature browser API or compositor-adjacent approach that can provide equivalent pixels without rebuilding the whole DOM each frame
+Test, where practical and supported:
 
-Check licenses before adding/deriving code.
+1. current `html2canvas-pro`
+2. `html2canvas-pro` with `foreignObjectRendering`
+3. `modern-screenshot`
+4. `modern-screenshot` reusable/singleton context and worker-assisted path if applicable
+5. SnapDOM
+6. native/emerging HTML-in-Canvas / `drawElementImage()` only where actually exposed by the browser
 
-Do not replace the current engine based on README claims. Build a benchmark harness and measure it on the exact demo.
+Check licenses before adding dependencies.
+
+### Stop rule
+
+Do not spend a full implementation cycle polishing a candidate before measuring it.
+
+For each candidate:
+
+1. make the smallest benchmark integration
+2. verify representative visual correctness
+3. measure repeated capture
+4. if it is not materially better or is incorrect, record the result and move on
+
+Do not replace the production capture engine merely because a README claims it is faster.
+
+### Measurements
+
+Record at minimum:
+
+- cold capture time
+- warm/repeated capture median
+- p95 capture time
+- main-thread long-task impact
+- texture dimensions
+- memory trend over repeated captures
+- correctness for fonts, images, gradients, pseudo-elements, transforms and clipping
+- fixed/sticky behavior where relevant
+
+Use the current representative mobile demo and a desktop viewport.
+
+Test modest repeated cadences such as 1, 5, 10, 15 and 20 captures/sec only when safe.
+
+### Decision rule
+
+Prefer a backend that is both correct and materially faster. A change from ~90 ms to ~75 ms is not enough to justify a major integration by itself.
+
+If no capture backend is sufficiently fast for live repeated capture, stop swapping screenshot libraries and proceed to scroll compensation using the best reliable backend.
 
 ---
 
-# 4. Benchmark harness
+# 4. Primary architecture experiment: overscan + scroll-delta compensation
 
-Create a repeatable capture-engine benchmark using the current demo and representative mobile viewport.
+This is the most important experiment in Milestone 4.
 
-Measure at minimum:
+Do **not** require a new DOM capture for every display frame.
 
-- capture wall time
-- main-thread blocking / long-task impact
-- resulting texture dimensions
-- pixel correctness for current viewport
-- support for fonts, gradients, images, pseudo-elements, clipping, transforms and fixed elements
-- CORS behavior
-- memory allocations
-- repeated-capture stability
-- whether the implementation can reuse a prepared DOM/SVG/context instead of rebuilding from scratch
-
-Test repeated capture cadence such as:
+Scrolling gives us an exact movement value:
 
 ```text
-1 fps
-5 fps
-10 fps
-15 fps
-20 fps
-30 fps
+captureScrollY = scroll position represented by source texture
+currentScrollY = live scroll position
+deltaY = currentScrollY - captureScrollY
 ```
 
-Do not run high cadences indefinitely if the browser becomes unstable. The goal is to determine a safe sustainable envelope.
-
----
-
-# 5. Continuous scroll strategies to investigate
-
-Do not assume the only solution is full fresh viewport capture on every frame.
-
-Evaluate these strategies separately and in combination.
-
-## A. Faster repeated capture
-
-If a replacement engine can produce correct current viewport pixels cheaply enough, update the WebGL texture during scroll at a controlled cadence.
-
-Potential target bands:
-
-```text
-<= 8 ms capture: strong candidate for high-frequency refresh
-8-16 ms: candidate for moderate live refresh
-16-30 ms: candidate for lower-frequency refresh with interpolation/compensation
->30 ms: unlikely to be safe for direct repeated capture during interaction
-```
-
-These are starting points, not guarantees. Measure actual frame performance.
-
-## B. Scroll-compensated stale texture
-
-Because a scroll is primarily a known translation of page content, test whether the previous captured texture can remain visually correct between fresh captures by compensating UVs using scroll delta.
+When the captured source contains sufficient pixels above/below the currently sampled region, keep the existing WebGL shader running and offset backdrop sampling by `deltaY`.
 
 Conceptually:
 
 ```text
-capture at scrollY = A
-current scrollY = B
-delta = B - A
+CAPTURED SOURCE WITH OVERSCAN
 
-sample previous texture with UV offset corresponding to delta
++----------------------------+
+| future backdrop pixels     |
+|                            |
+| +------------------------+ |
+| | current glass sampling | |
+| +------------------------+ |
+|                            |
+| previous backdrop pixels   |
++----------------------------+
+
+scroll changes
+      |
+      v
+change sampling origin immediately on GPU
+      |
+      v
+WebGL glass remains live
+      |
+      v
+fresh capture replenishes source asynchronously
 ```
 
-This may keep the refracted backdrop moving correctly for a short interval without a new DOM capture.
-
-Important constraints:
-
-- captured viewport must contain enough overscan above/below the visible region
-- fixed/sticky elements complicate pure translation
-- animated/changed DOM can invalidate assumptions
-- texture bounds must not reveal empty/incorrect pixels
-
-If this works, combine it with periodic fresh captures rather than capturing every frame.
-
-## C. Overscan capture
-
-Capture a viewport larger than the visible glass sampling region so UV compensation has room during scrolling.
-
-For fixed header/footer use, consider capture bands with vertical overscan rather than the entire viewport if that genuinely reduces work.
-
-Example:
-
-```text
-header source band = visible header backdrop + generous vertical overscan
-footer source band = visible footer backdrop + generous vertical overscan
-```
-
-Benchmark whether the selected capture engine actually avoids full DOM traversal when output is cropped. Do not assume crop == lower cost.
-
-## D. Surface-specific backdrop source
-
-The library's primary use is fixed desktop/mobile navigation, not arbitrary full-screen glass.
-
-Investigate whether only the background required by registered surfaces can be represented/captured efficiently.
-
-This may permit:
-
-- small source textures
-- independent overscan bands
-- less upload bandwidth
-- faster repeated updates
-
-But only pursue it if capture-engine traversal cost also improves.
-
-## E. Predictive / interpolation strategy
-
-For very fast scroll velocity, test whether UV compensation can carry the material between lower-frequency capture updates.
-
-Do not synthesize arbitrary page content or invent pixels beyond available overscan. Correctness is more important than hiding every capture.
+The WebGL render loop may run at display refresh while DOM backdrop capture runs much less frequently.
 
 ---
 
-# 6. Preferred continuous architecture
+# 5. Extend, do not remove, generation safeguards
 
-A promising target architecture is:
+Reuse the existing generation system.
 
-```text
-initial capture with overscan
-        |
-        v
-real WebGL glass visible
-        |
-        v
-scroll starts
-        |
-        +--> keep WebGL visible
-        |
-        +--> adjust sampling by live scroll delta immediately
-        |
-        +--> asynchronously refresh backdrop at measured safe cadence
-        |
-        +--> when fresh texture arrives, swap/update seamlessly
-        |
-        v
-scroll stops
-        |
-        +--> one final exact current capture if needed
-        |
-        v
-real WebGL glass remains visible throughout
-```
-
-This should be tested before attempting extremely high-frequency full DOM screenshots.
-
----
-
-# 7. Texture-coordinate correctness
-
-Continuous mode must preserve the existing generation/freshness protections but extend them to distinguish:
+Extend source validity into explicit states:
 
 ```text
-EXACT FRESH
-texture corresponds exactly to current viewport
+EXACT
+source texture exactly matches current backdrop state
 
-SCROLL-COMPENSATED
-texture is older but still valid within known overscan and current scroll delta
+SCROLL_COMPENSATED
+source was captured at another scroll position, but the current sampling region is mathematically representable inside its overscan using known scroll delta
 
 INVALID
-texture can no longer represent current viewport correctly
+source cannot correctly represent the current backdrop
 ```
 
-WebGL may remain visible for `SCROLL-COMPENSATED` only if the mapping is mathematically valid and bounded by captured source data.
-
-Never label an arbitrary stale texture as compensated.
-
-Track:
+Track at least:
 
 - capture scrollX/Y
 - current scrollX/Y
-- delta
-- available overscan bounds
-- exact/compensated/invalid status
-- latest capture generation
+- scroll delta
+- capture generation
+- texture generation
+- DOM/content generation if needed
+- overscan bounds
+- source state
+
+An arbitrary stale texture must never be relabeled as compensated.
+
+A fresh asynchronous capture that became obsolete before completion must still be discarded using the existing race protection.
 
 ---
 
-# 8. Fixed/sticky and DOM mutation complications
+# 6. Optimize for the real product surfaces
 
-Scroll translation is not globally uniform for all DOM content.
+The first continuous implementation does **not** need to solve arbitrary full-screen glass.
 
-Audit at minimum:
+Primary surfaces are:
+
+- fixed desktop header
+- fixed mobile header
+- fixed mobile footer/navigation
+
+These are small, constrained regions.
+
+Investigate maintaining source bands around registered glass surfaces rather than treating the entire page as equally important.
+
+Example mobile viewport:
+
+```text
++---------------------------+
+| HEADER SOURCE + OVERSCAN  |
++---------------------------+
+|                           |
+| ordinary page             |
+|                           |
++---------------------------+
+| FOOTER SOURCE + OVERSCAN  |
++---------------------------+
+```
+
+Important: simply cropping the output of a DOM screenshot may not reduce DOM traversal cost. Measure whether the chosen capture backend can genuinely avoid expensive full-document work.
+
+Even when capture traversal cost does not improve, smaller textures can still reduce upload bandwidth and GPU memory; measure that separately.
+
+---
+
+# 7. Replenishment strategy
+
+Once scroll compensation works, refresh the source asynchronously before compensated sampling runs out of valid overscan.
+
+Do not hardcode a high capture frequency first.
+
+Derive refresh behavior from:
+
+- scroll velocity
+- remaining overscan
+- measured capture duration
+- whether a capture is already in flight
+- current source validity
+
+Desired behavior:
+
+```text
+WebGL renders continuously
+        |
+        +-- live scroll delta moves sampling every frame
+        |
+        +-- source approaches overscan boundary
+        |
+        +-- one refresh is requested early enough
+        |
+        +-- new source arrives
+        |
+        +-- texture swap/update is seamless
+```
+
+Maximum one capture in flight.
+
+Keep pending work bounded. Never create a capture backlog during fast scrolling.
+
+---
+
+# 8. Seamless source replacement
+
+A new texture must not produce the old `chuck-chuck` visual transition.
+
+When a fresh source arrives:
+
+- validate that it is still current/usable
+- upload it to the existing texture path
+- align sampling coordinates correctly
+- swap/rebase the capture origin without a visible positional jump
+- preserve the same WebGL material continuously
+
+Do not fade to CSS while replacing the source.
+
+If a short WebGL-to-WebGL crossfade is required to hide unavoidable raster differences, benchmark it and keep both layers within WebGL. Prefer exact coordinate rebasing first.
+
+---
+
+# 9. Hard cases: keep scope disciplined
+
+Pure scroll translation is not valid for every visual element.
+
+Audit:
 
 - normal document-flow content
 - `position: fixed`
 - `position: sticky`
-- transforms
-- CSS animations
-- videos/canvas/WebGL content
-- route transitions
-- DOM mutations during scroll
+- CSS transforms/animations
+- videos
+- canvas/WebGL content
+- route changes
+- meaningful DOM mutations during scroll
 
-If some content cannot be represented correctly by UV translation, define clear invalidation rules.
+Do not attempt to build a general browser compositor in this milestone.
 
-The primary product use is fixed glass navigation over ordinary scrolling content, so optimize for that path first.
+First make ordinary scrolling content behind fixed navigation work extremely well.
 
----
+For invalidating content:
 
-# 9. Device capability and stable fallback
+- mark compensation invalid when necessary
+- request a bounded refresh
+- do not expose known-wrong pixels as if exact
+- do not automatically drop to CSS for every normal mutation
 
-Create a runtime capability decision based primarily on measured behavior.
-
-Signals may include:
-
-- WebGL2 availability
-- frame timing
-- capture engine timing
-- texture upload timing
-- device memory / hardware concurrency as initial hints only
-- repeated long tasks
-- memory pressure/context loss
-
-Suggested policy:
-
-```text
-start conservative continuous-webgl test
-        |
-        v
-measure actual device
-        |
-        +--> sustainable -> remain continuous-webgl
-        |
-        +--> not sustainable -> switch once to css-fallback
-```
-
-Do not repeatedly oscillate modes during scrolling.
-
-Fallback must prioritize stability:
-
-```text
-CSS fallback at idle
-CSS fallback during scroll
-CSS fallback after scroll
-```
+Document unsupported/difficult content classes accurately.
 
 ---
 
-# 10. Performance acceptance
+# 10. Continuous mode must be tested before fallback thresholds
 
-For continuous WebGL mode, test on real or representative mobile hardware.
+Do not spend significant time tuning device classification before the continuous architecture works.
 
-Required outcomes:
+First prove the best architecture on representative hardware.
 
-- no visible CSS/WebGL mode switch
-- glass remains refractive during scroll
-- scrolling remains responsive
-- no sustained severe frame drops
-- no browser tab crashes
+Then define fallback thresholds from measurements.
+
+The intended eventual decision is stable:
+
+```text
+startup / warm-up measurement
+        |
+        +-- continuous path sustainable -> WEBGL for entire session
+        |
+        +-- WebGL unavailable or proven unsafe -> CSS for entire session
+```
+
+A runtime may downgrade once if prolonged measurements show severe instability, context loss, runaway memory or unacceptable sustained jank.
+
+Do not oscillate per scroll gesture.
+
+---
+
+# 11. Performance guardrails
+
+For continuous WebGL mode:
+
+- WebGL remains visible during scrolling
+- no capture backlog
+- maximum one expensive capture in flight
+- bounded textures/memory
+- no resource allocation per animation frame
 - no WebGL context-loss loop
-- no runaway memory growth
-- no continuous capture backlog
+- no browser/tab crashes
+- normal input remains responsive
 
-Aim for smooth 60 Hz behavior where hardware supports it, but do not require every capture to run at 60 fps. WebGL can render at display refresh while backdrop updates happen less frequently if scroll compensation preserves visual correctness.
+Aim for smooth 60 Hz on ordinary target devices.
+
+Do not require backdrop capture itself to run at 60 Hz. The point of compensation is to decouple WebGL frame rate from DOM capture rate.
+
+Track:
+
+- average frame ms
+- p95 frame ms
+- worst frame ms
+- capture median/p95
+- captures/sec
+- capture backlog
+- texture upload ms
+- source state exact/compensated/invalid
+- overscan remaining
+- memory trend where practical
 
 ---
 
-# 11. Visual acceptance
+# 12. Safari/iOS requirement
 
-Use strong test content behind glass:
+Do not assume Apple's native Liquid Glass APIs are available to webpages. Safari webpages only receive exposed Web APIs, not privileged access to Apple's native compositor material.
+
+However, Safari/iPhone is a **first-class target**, not an automatic CSS fallback.
+
+Test continuous WebGL on:
+
+- Safari macOS
+- iPhone Safari where available
+
+Keep source textures reasonably small. Header/footer source-band architecture is preferable to giant full-page canvases, especially on mobile.
+
+Use browser-supported worker/off-main-thread capabilities where they actually help, but do not assume moving work to a worker makes DOM capture itself free.
+
+Record actual Safari limitations instead of guessing.
+
+---
+
+# 13. Visual acceptance
+
+Use the existing difficult demo content:
 
 - very large typography
 - concentric rings
 - high-contrast lines
 - saturated blocks
 
-During continuous scrolling:
+During scroll:
 
-- those elements must move naturally under the glass
-- refraction must remain visible
-- no frozen backdrop sensation
-- no obvious jumping when a new capture arrives
+- real refraction remains visible
+- backdrop motion tracks the page naturally
+- no frozen-glass sensation
 - no CSS-looking phase
-- no stale wrong-position content
+- no wrong previous-position content
+- no jump when a new source texture arrives
+- header and footer remain visually coherent
 
-Fresh texture updates must blend/swap without a perceptible `chuck-chuck` transition.
-
----
-
-# 12. Do not do these things
-
-Do NOT satisfy this milestone by:
-
-- styling CSS to imitate WebGL better
-- retaining CSS as the normal scrolling presentation on capable devices
-- simply hiding the transition with a longer fade
-- running current ~90 ms html2canvas captures at high frequency
-- removing real refraction during scroll
-- sacrificing scroll responsiveness to keep WebGL visible
-- permanently targeting only flagship devices without graceful fallback
+The test must make failures obvious; do not simplify the demo to hide them.
 
 ---
 
-# 13. Implementation order
+# 14. Explicit non-goals / stop wasting effort here
 
-1. Read `AGENTS.md`, `PERFORMANCE_PLAN.md`, `OPTICAL_TUNING.md`, and this file.
-2. Preserve the current working WebGL shader and generation safeguards.
-3. Add a capture-engine benchmark harness.
-4. Benchmark current and plausible alternative capture engines.
-5. Report measured results before choosing an engine.
-6. Implement the fastest reliable engine behind an internal capture abstraction.
-7. Prototype scroll-delta UV compensation using the current capture scroll origin.
-8. Add overscan sufficient for compensated movement.
-9. Keep WebGL visible throughout scroll in experimental continuous mode.
-10. Refresh the texture at an empirically safe cadence.
-11. Ensure fresh texture swaps are visually seamless.
-12. Add exact/compensated/invalid source-state diagnostics.
-13. Add runtime capability/performance downgrade to stable CSS fallback.
-14. Test prolonged and aggressive mobile scrolling.
-15. Verify no capture queue/memory/context-loss issues.
-16. Run build/tests.
-17. Update benchmark/docs with actual numbers and limitations.
+During this milestone do NOT:
 
-If an experimental path fails, document why with measurements and try the next architecture rather than silently returning to temporary CSS-on-scroll.
+- redesign the liquid-glass shader
+- retune optics unless continuous source management exposes a concrete shader regression
+- rewrite the React public API
+- rewrite the renderer from scratch
+- polish CSS/WebGL transition parity
+- make CSS the normal scrolling mode
+- create a renderer/canvas per glass surface
+- run current ~90 ms html2canvas captures repeatedly during scroll
+- deeply integrate every screenshot library before benchmarking it
+- spend large effort on perfect device-tier thresholds before continuous WebGL works
+- attempt arbitrary full-page glass before fixed header/footer works
 
 ---
 
-# 14. Completion criteria
+# 15. Implementation order — fastest route
 
-Milestone 4 is passed only if at least one tested capable Chromium device/browser configuration can:
+Execute in this order and do not broaden scope without evidence:
 
-- remain on WebGL glass at idle, during scroll, and after scroll
-- show genuine moving refraction during scroll
-- avoid visible rendering-mode transitions
-- remain responsive and stable
-- use bounded capture/update work
+1. Read `AGENTS.md`, this file, `PERFORMANCE_PLAN.md`, and `OPTICAL_TUNING.md`.
+2. Confirm existing renderer/shader/generation tests still pass.
+3. Build the minimal capture benchmark harness.
+4. Benchmark the candidate capture paths with strict time-boxing.
+5. Choose the fastest reliable capture path, or keep the current one if alternatives are not materially better.
+6. Add capture-source metadata: scroll origin and overscan bounds.
+7. Implement `EXACT / SCROLL_COMPENSATED / INVALID` source state.
+8. Implement live scroll-delta UV compensation while keeping WebGL visible.
+9. Add overscan to extend the useful lifetime of a capture.
+10. Verify a slow scroll works with **zero CSS presentation**.
+11. Add bounded asynchronous replenishment before overscan exhaustion.
+12. Make fresh texture rebasing/swaps visually seamless.
+13. Test fast scroll and repeated direction changes; ensure no capture backlog.
+14. Optimize source bands for fixed header/footer only if measurement shows a real benefit.
+15. Audit ordinary fixed/sticky/mutation cases and document invalidation behavior.
+16. Test representative Chromium desktop first.
+17. Test Firefox desktop.
+18. Test Safari macOS.
+19. Test Android Chrome / iPhone Safari when accessible; if not accessible, explicitly report that real-device validation remains pending.
+20. Only now derive stable fallback thresholds from actual measurements.
+21. Run build/tests and prolonged scrolling stability tests.
+22. Update this file and benchmark docs with verified results.
 
-And the library must have a stable whole-session CSS fallback for hardware that cannot meet the continuous-WebGL performance envelope.
+If an experiment fails, record the measurement/reason and continue to the next narrow experiment. Do not silently return to temporary CSS-on-scroll and call the milestone complete.
 
 ---
 
-# 15. Completion report
+# 16. Milestone 4 acceptance criteria
 
-When finished, report:
+Milestone 4 is not passed merely because one powerful desktop can render WebGL continuously.
 
-- capture engines benchmarked
-- exact measured timing for each
-- chosen capture engine/path and why
-- whether scroll-delta UV compensation was implemented
-- overscan strategy
-- capture/update cadence during scroll
-- avg/p95/worst frame timing
-- memory/context-loss observations
-- mobile viewport/device/browser tested
-- continuous WebGL visual result
-- fallback decision thresholds
-- remaining browser limitations
+Minimum technical proof before calling the architecture successful:
+
+- continuous WebGL at idle/scroll/stop in Chromium desktop
+- real moving refraction during scroll
+- no CSS interaction presentation
+- no visible source-rebase jump
+- bounded capture work and no queue
+- stable prolonged scrolling
+- generation/race correctness preserved
+- benchmark evidence for capture backend choice
+
+Broader product success additionally requires validation on Firefox, Safari, and representative mobile hardware.
+
+If representative recent mobile hardware mostly falls back to CSS, report Milestone 4 as **not meeting the product goal**, even if fallback technically works.
+
+---
+
+# 17. Completion report
+
+When work stops for this milestone, report concisely:
+
+- capture engines/paths benchmarked
+- cold/median/p95 timing for each
+- chosen capture path and why
+- whether scroll-delta compensation works
+- overscan/source-band design
+- WebGL frame avg/p95/worst during scroll
+- capture cadence during slow and fast scroll
+- whether any CSS presentation occurred in continuous mode
+- source-rebase visual result
+- capture backlog/memory/context-loss observations
+- Chromium result
+- Firefox result
+- Safari result
+- Android/iPhone result or explicit pending status
+- actual device configurations that fell back
+- remaining blockers to making continuous WebGL the normal experience
