@@ -1,12 +1,12 @@
 import { captureViewport } from "../capture/captureManager.js";
-import { planVerticalOverscan } from "../capture/captureGeometry.js";
+import { planCaptureAnchorY, planVerticalOverscan } from "../capture/captureGeometry.js";
 import { adaptQuality } from "../performance/adaptiveQuality.js";
 import { mapBackdropSource, type BackdropSourceMapping, type BackdropSourceMetadata } from "../performance/backdropSource.js";
 import { CaptureScheduler } from "../performance/captureScheduler.js";
 import { summarizeFrameTimes } from "../performance/frameMetrics.js";
 import { rectCanAffectSurface } from "../performance/mutationRelevance.js";
 import { initialQuality, QUALITY_CONFIG } from "../performance/quality.js";
-import { decideSourceReplenishment } from "../performance/sourceReplenishment.js";
+import { decideSourceReplenishment, directionalOverscanRemaining } from "../performance/sourceReplenishment.js";
 import { TextureFreshness } from "../performance/textureFreshness.js";
 import type { GlassCapturePolicy, GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders.js";
@@ -31,8 +31,9 @@ interface SurfaceRecord {
 
 const QUALITY_ORDER: GlassQuality[] = ["fallback", "low", "medium", "high"];
 const LIBRARY_OWNED_SELECTOR = "[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]";
+const CONSUMER_CAPTURE_EXCLUSION_SELECTOR = "[data-html2canvas-ignore], [data-liquid-glass-capture-ignore]";
 const POC_OVERSCAN_VIEWPORTS = 3;
-const LENS_LOCAL_OVERSCAN_VIEWPORTS = 8;
+const LENS_LOCAL_OVERSCAN_VIEWPORTS = 1.5;
 const MAX_SOURCE_PIXELS = 6_291_456;
 const MUTATION_OBSERVER_OPTIONS: MutationObserverInit = {
   subtree: true,
@@ -46,9 +47,19 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
 
-function isLibraryOwnedNode(node: Node): boolean {
+function isCaptureExcludedNode(node: Node): boolean {
   const element = node instanceof Element ? node : node.parentElement;
-  return Boolean(element?.closest(LIBRARY_OWNED_SELECTOR));
+  return Boolean(element?.closest(`${LIBRARY_OWNED_SELECTOR}, ${CONSUMER_CAPTURE_EXCLUSION_SELECTOR}`));
+}
+
+function isDefinitelyNotPainted(element: Element): boolean {
+  if (!element.isConnected) return false;
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    if (current.hasAttribute("hidden")) return true;
+    const computed = getComputedStyle(current);
+    if (computed.display === "none" || computed.contentVisibility === "hidden") return true;
+  }
+  return false;
 }
 
 function shader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -241,8 +252,6 @@ export class GlassRenderer {
     this.mutationObserver = new MutationObserver(this.onMutation);
     this.observeMutations();
     window.addEventListener("scroll", this.onScroll, { passive: true, capture: true });
-    window.addEventListener("wheel", this.onScrollIntent, { passive: true, capture: true });
-    window.addEventListener("touchmove", this.onScrollIntent, { passive: true, capture: true });
     window.addEventListener("resize", this.onResize, { passive: true });
     window.addEventListener("popstate", this.onRouteChange);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -305,8 +314,6 @@ export class GlassRenderer {
     clearTimeout(this.captureTimer); clearTimeout(this.captureRetryTimer); clearTimeout(this.mutationTimer); clearTimeout(this.interactionSettleTimer);
     this.rootObserver.disconnect(); this.mutationObserver.disconnect();
     window.removeEventListener("scroll", this.onScroll, true);
-    window.removeEventListener("wheel", this.onScrollIntent, true);
-    window.removeEventListener("touchmove", this.onScrollIntent, true);
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("popstate", this.onRouteChange);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
@@ -403,7 +410,7 @@ export class GlassRenderer {
       })
       : []);
     const relevant = mutations.some((mutation) => {
-      if (isLibraryOwnedNode(mutation.target)) return false;
+      if (isCaptureExcludedNode(mutation.target)) return false;
       if (mutation.type === "attributes" && mutation.target instanceof Element) {
         const computed = getComputedStyle(mutation.target);
         const animated = computed.animationName !== "none"
@@ -413,7 +420,7 @@ export class GlassRenderer {
       let affectedElements: Element[];
       if (mutation.type === "childList") {
         const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
-        if (changedNodes.length > 0 && changedNodes.every(isLibraryOwnedNode)) return false;
+        if (changedNodes.length > 0 && changedNodes.every(isCaptureExcludedNode)) return false;
         const addedElements = [...mutation.addedNodes].flatMap((node) => {
           const element = node instanceof Element ? node : node.parentElement;
           return element ? [element] : [];
@@ -429,12 +436,17 @@ export class GlassRenderer {
         affectedElements = element ? [element] : [];
       }
       if (affectedElements.length === 0) return true;
-      const surfaceRects = Array.from(this.surfaces.values(), ({ rect }) => rect);
-      const maximumSamplingMargin = Array.from(this.surfaces.values()).reduce(
+      const paintedSurfaces = Array.from(this.surfaces.values()).filter(({ element, rect }) =>
+        rect.width > 0 && rect.height > 0 && !isDefinitelyNotPainted(element),
+      );
+      if (paintedSurfaces.length === 0) return false;
+      const surfaceRects = paintedSurfaces.map(({ rect }) => rect);
+      const maximumSamplingMargin = paintedSurfaces.reduce(
         (margin, { options }) => Math.max(margin, options.thickness * options.refraction + options.blur * 2),
         0,
       );
       return affectedElements.some((element) => {
+        if (isCaptureExcludedNode(element) || isDefinitelyNotPainted(element)) return false;
         const computed = getComputedStyle(element);
         if (computed.animationName !== "none") return false;
         return rectCanAffectSurface(element.getBoundingClientRect(), surfaceRects, maximumSamplingMargin);
@@ -458,11 +470,6 @@ export class GlassRenderer {
     this.mutationObserver.observe(this.root, MUTATION_OBSERVER_OPTIONS);
   }
 
-  private onScrollIntent = (): void => {
-    if (this.quality === "fallback") return;
-    this.beginScrollInteraction("scroll settled");
-  };
-
   private onScroll = (): void => {
     if (this.quality === "fallback") return;
     const scrollX = window.scrollX;
@@ -471,15 +478,17 @@ export class GlassRenderer {
     // real live-viewport position change starts or extends an interaction.
     if (scrollX === this.lastKnownScrollX && scrollY === this.lastKnownScrollY) return;
     const now = performance.now();
+    const scrollDeltaY = scrollY - this.lastKnownScrollY;
     if (this.lastScrollSampleAt > 0) {
       const elapsed = Math.max(1, now - this.lastScrollSampleAt);
-      const instantaneous = Math.abs(scrollY - this.lastKnownScrollY) / elapsed;
-      this.scrollVelocityY = this.scrollVelocityY * 0.65 + instantaneous * 0.35;
-    }
+      const instantaneous = scrollDeltaY / elapsed;
+      this.scrollVelocityY = Math.sign(instantaneous)
+        * (Math.abs(this.scrollVelocityY) * 0.65 + Math.abs(instantaneous) * 0.35);
+    } else this.scrollVelocityY = Math.sign(scrollDeltaY) * 0.001;
     this.lastScrollSampleAt = now;
     this.lastKnownScrollX = scrollX;
     this.lastKnownScrollY = scrollY;
-    this.beginScrollInteraction("scroll settled");
+    this.beginScrollInteraction();
   };
 
   private beginScrollInteraction(reason?: string): void {
@@ -674,6 +683,15 @@ export class GlassRenderer {
     if (state.interactionMode === "scrolling") {
       if (this.captureRegion !== "lens-local") return;
       const mapping = this.currentSourceMapping();
+      const maximumScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const reachedDirectionalBoundary = (this.scrollVelocityY > 0 && window.scrollY >= maximumScrollY - 1)
+        || (this.scrollVelocityY < 0 && window.scrollY <= 1);
+      if (mapping.state !== "invalid" && reachedDirectionalBoundary) return;
+      const remainingY = directionalOverscanRemaining(
+        this.sourceMetadata?.overscanY ?? 0,
+        mapping.deltaY,
+        this.scrollVelocityY,
+      );
       const decision = decideSourceReplenishment({
         sourceState: mapping.state,
         sourceReady: this.sourceReady,
@@ -681,7 +699,7 @@ export class GlassRenderer {
         capturesThisScrollGesture: state.capturesThisScrollGesture,
         captureMs: this.lastCaptureMs,
         scrollVelocityY: this.scrollVelocityY,
-        remainingY: mapping.remainingY,
+        remainingY,
         overscanY: this.sourceMetadata?.overscanY ?? 0,
         viewportHeight: window.innerHeight,
       });
@@ -742,8 +760,16 @@ export class GlassRenderer {
     if (this.layoutDirty) this.measureSurfaces();
     const region = this.lensLocalRegion();
     const overscan = this.captureOverscan(scale, region);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+    const captureAnchorY = planCaptureAnchorY({
+      scrollY: window.scrollY,
+      documentHeight,
+      sourceTop: region?.top ?? 0,
+      sourceHeight: region?.height ?? window.innerHeight,
+      overscanY: overscan.y,
+    });
     const capturedViewport = {
-      scrollX: window.scrollX, scrollY: window.scrollY,
+      scrollX: window.scrollX, scrollY: captureAnchorY,
       width: window.innerWidth, height: window.innerHeight,
       contentGeneration: this.contentGeneration,
     };
@@ -774,7 +800,7 @@ export class GlassRenderer {
         capturePromise = captureViewport({
           root: this.root,
           scale,
-          ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
+          ignore: (element) => element.matches(`${LIBRARY_OWNED_SELECTOR}, [data-liquid-glass-capture-ignore]`),
           overscanX: overscan.x,
           overscanY: overscan.y,
           scrollX: capturedViewport.scrollX,

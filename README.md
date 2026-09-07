@@ -53,8 +53,8 @@ Open `http://127.0.0.1:5173/?debug`. The page deliberately puts high-contrast ty
 
 ```text
 ordinary DOM page
-      ↓ occasional viewport capture (html2canvas-pro)
-one reusable background texture
+      ↓ occasional surface-union capture + overscan (html2canvas-pro)
+one reusable scroll-compensated background texture
       ↓
 one fixed WebGL2 canvas + one program + one quad buffer
       ↓ one draw per visible registered region
@@ -63,9 +63,9 @@ desktop header / mobile header / mobile footer
 accessible DOM content remains above the visual layer
 ```
 
-The renderer captures only the viewport, not an arbitrarily tall document. Captures exclude the renderer, glass surfaces, and debug UI. Texture storage is reused with `texSubImage2D` whenever dimensions do not change. The render loop sleeps when nothing is dirty.
+The renderer captures a bounded document band around the union of visible glass surfaces, with vertical overscan for scrolling. Non-painting and safely clipped off-region DOM branches are pruned before cloning. Captures exclude the renderer, glass surfaces, debug UI, and consumer trees marked with `data-liquid-glass-capture-ignore`. Texture storage is reused with `texSubImage2D` whenever dimensions do not change. The render loop sleeps when nothing is dirty.
 
-Scroll events are passive and start no DOM captures. During scrolling, settling, and the post-scroll capture, surfaces use lightweight CSS glass calibrated to the tuned shader's calm center; the stale WebGL canvas is hidden immediately so the two presentations do not compound into a visibly foggier state. Roughly 140 ms after scrolling settles, one coalesced capture refreshes the shared texture and WebGL fades back in. Viewport and texture generations prevent an obsolete asynchronous result from becoming visible; WebGL returns only after the current generation uploads and draws successfully. Resize and mutation bursts use the same freshness contract. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
+Scroll events are passive. While the current document position remains within captured overscan, the WebGL shader follows scrolling immediately by translating its source UVs; a valid compensated source is reused after settle without another DOM capture. Boundary-aware source placement avoids spending texture rows outside the document. Fast capture paths may replenish before exhaustion, while slow paths recover with one coalesced settled capture only when the source actually becomes invalid. Viewport, content, capture, texture, and draw generations prevent an obsolete asynchronous result from becoming visible. Resize and relevant mutation bursts use the same freshness contract. Route history changes invalidate the snapshot, and consumers can call `useGlassRenderer()?.invalidate()` after router events that do not emit `popstate`.
 
 The default optical profile adapts to each surface's thickness and aspect ratio. Shallow header/footer pills receive a thin-lens treatment: the center transmits a recognizable, gently scattered backdrop while displacement, chromatic separation, and stronger scattering are concentrated toward the curved rim. Larger surfaces may retain a deeper profile. This adaptation is internal; the existing `refraction`, `blur`, tint, and chromatic controls remain the public API.
 

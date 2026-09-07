@@ -24,6 +24,28 @@ export interface VerticalOverscanGeometry {
   maxPixelCount: number;
 }
 
+export interface CaptureAnchorGeometry {
+  scrollY: number;
+  documentHeight: number;
+  sourceTop: number;
+  sourceHeight: number;
+  overscanY: number;
+}
+
+/**
+ * Shift the logical capture origin near document boundaries so texture rows
+ * are spent on real page content instead of transparent out-of-bounds padding.
+ */
+export function planCaptureAnchorY(geometry: CaptureAnchorGeometry): number {
+  const minimum = geometry.overscanY - geometry.sourceTop;
+  const maximum = geometry.documentHeight - geometry.sourceTop - geometry.sourceHeight - geometry.overscanY;
+  // When the desired texture is taller than the document, every anchor in
+  // the reversed interval covers both document edges. Pick the closest one so
+  // current scroll remains valid while avoiding one-sided wasted padding.
+  if (minimum > maximum) return Math.min(minimum, Math.max(maximum, geometry.scrollY));
+  return Math.min(maximum, Math.max(minimum, geometry.scrollY));
+}
+
 export function planVerticalOverscan(geometry: VerticalOverscanGeometry): number {
   if (geometry.scale <= 0 || geometry.sourceWidth <= 0 || geometry.sourceHeight <= 0) return 0;
   const desired = geometry.viewportHeight * geometry.desiredViewportCount;

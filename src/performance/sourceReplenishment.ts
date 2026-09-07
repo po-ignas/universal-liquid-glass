@@ -24,8 +24,15 @@ export function activeReplenishmentLimit(captureMs: number): number {
 
 export function replenishmentThreshold(input: SourceReplenishmentInput): number {
   const captureLeadMs = Math.max(input.captureMs, 80) + 50;
-  const velocityLead = input.scrollVelocityY * captureLeadMs * 1.35;
+  const velocityLead = Math.abs(input.scrollVelocityY) * captureLeadMs * 1.35;
   return Math.min(input.overscanY * 0.75, Math.max(input.viewportHeight * 0.75, velocityLead));
+}
+
+export function directionalOverscanRemaining(overscanY: number, deltaY: number, velocityY: number): number {
+  if (overscanY <= 0) return 0;
+  if (velocityY > 0) return Math.max(0, overscanY - deltaY);
+  if (velocityY < 0) return Math.max(0, overscanY + deltaY);
+  return Math.max(0, overscanY - Math.abs(deltaY));
 }
 
 /**

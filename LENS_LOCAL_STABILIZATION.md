@@ -2,6 +2,48 @@
 
 Date: 2026-09-07
 
+## Delivery Market validation — 2026-09-08
+
+The real Delivery Market page showed that output size was not the primary
+bottleneck. At 1280×720, DPR 2, HIGH quality, with only the 97 px desktop
+header visible, the previous 8-viewport source took 954.9 ms: 665.7 ms DOM
+traversal, 287.7 ms rasterization, 1.4 ms bitmap preparation, and 1.1 ms
+upload. Its 960×6553 texture occupied 25,163,520 bytes.
+
+The revised capture path safely prunes entire branches that cannot paint:
+`display:none`, `content-visibility:hidden`, fully transparent subtrees, and
+off-region paint-contained or overflow-clipped subtrees. It preserves the
+document head and CSS resources. It also uses 1.5 viewports of overscan and
+shifts the logical source anchor at document boundaries, so allocated rows
+cover real document content instead of transparent space above or below it.
+
+Observed results in the same local Chromium session:
+
+| Layout | Capture | Stages (traversal / raster / prep / upload) | Source |
+| --- | ---: | --- | --- |
+| Delivery Market desktop, header | 391.1 ms | 164.4 / 225.7 / 0.8 / 1.1 ms | 960×1737, 6,670,080 bytes |
+| Delivery Market mobile, header + footer | 392.9 ms | 93.6 / 299.0 / 0.2 / 0.7 ms | 503×3132, 6,301,584 bytes |
+| Demo mobile | 96.6 ms | 9.7 / 82.1 / 4.5 / 0.8 ms | 503×3132, 6,301,584 bytes |
+
+This is a roughly 59% reduction for the real desktop integration. A time-boxed
+SnapDOM trial was rejected: despite clip pruning, Delivery Market took about
+2.9 seconds because full-page style resolution still dominated.
+
+Separate header and footer textures were not adopted. With scroll overscan,
+their document-space bands overlap; two captures would duplicate both the
+overlap and document traversal. The shared union is the smaller unique source
+interval for this page. Boundary-aware anchoring let that one mobile source
+cover Delivery Market's complete measured 2,297 px scroll range. Instant jumps
+to the bottom and back to the top stayed `scroll-compensated`, kept WebGL
+visible, and—after eliminating unconditional settled refreshes—performed zero
+additional captures.
+
+Mutation and input handling were tightened from the integration feedback:
+hidden responsive alternatives and explicitly capture-excluded consumer trees
+no longer invalidate the source, and wheel/touch activity inside an internal
+scroller no longer starts a page-scroll lifecycle without an actual window
+scroll.
+
 ## Outcome
 
 The demo's ordinary scrolling path is now materially more stable in Chromium:

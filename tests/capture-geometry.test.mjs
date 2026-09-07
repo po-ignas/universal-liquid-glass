@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planRegionCapture, planVerticalOverscan, planViewportCapture } from "../dist/capture/captureGeometry.js";
+import { planCaptureAnchorY, planRegionCapture, planVerticalOverscan, planViewportCapture } from "../dist/capture/captureGeometry.js";
+
+test("capture anchor uses real document rows at the top and bottom boundaries", () => {
+  assert.equal(planCaptureAnchorY({ scrollY: 0, documentHeight: 5000, sourceTop: 0, sourceHeight: 100, overscanY: 700 }), 700);
+  assert.equal(planCaptureAnchorY({ scrollY: 4200, documentHeight: 5000, sourceTop: 0, sourceHeight: 100, overscanY: 700 }), 4200);
+  assert.equal(planCaptureAnchorY({ scrollY: 2500, documentHeight: 5000, sourceTop: 0, sourceHeight: 100, overscanY: 700 }), 2500);
+  assert.equal(planCaptureAnchorY({ scrollY: 0, documentHeight: 3300, sourceTop: 0, sourceHeight: 1000, overscanY: 1600 }), 700);
+});
 
 test("lens-local overscan spends the bounded pixel budget on source lifetime", () => {
   assert.equal(planVerticalOverscan({

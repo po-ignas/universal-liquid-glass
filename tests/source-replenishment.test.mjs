@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activeReplenishmentLimit, decideSourceReplenishment, replenishmentThreshold } from "../dist/performance/sourceReplenishment.js";
+import { activeReplenishmentLimit, decideSourceReplenishment, directionalOverscanRemaining, replenishmentThreshold } from "../dist/performance/sourceReplenishment.js";
+
+test("remaining overscan follows the live scroll direction", () => {
+  assert.equal(directionalOverscanRemaining(1000, -800, 2), 1800);
+  assert.equal(directionalOverscanRemaining(1000, 800, -2), 1800);
+  assert.equal(directionalOverscanRemaining(1000, 800, 2), 200);
+  assert.equal(directionalOverscanRemaining(1000, -800, -2), 200);
+});
 
 const base = {
   sourceState: "scroll-compensated",
