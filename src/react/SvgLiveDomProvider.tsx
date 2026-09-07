@@ -43,6 +43,27 @@ interface Diagnostics {
   averageSyncMs: number;
 }
 
+interface ActiveScroller {
+  mirror: HTMLElement;
+  lastLeft: number;
+  lastTop: number;
+  stableFrames: number;
+}
+
+function animationIdentity(animation: Animation): string {
+  if (typeof CSSAnimation !== "undefined" && animation instanceof CSSAnimation) return `css:${animation.animationName}`;
+  if (typeof CSSTransition !== "undefined" && animation instanceof CSSTransition) return `transition:${animation.transitionProperty}`;
+  return "waapi";
+}
+
+function prepareMirrorScroller(mirror: HTMLElement): void {
+  // The source owns momentum and snapping. Letting the inert copy run its own
+  // smooth scroll/snap timeline makes it trail or jump to a different card.
+  mirror.style.setProperty("scroll-behavior", "auto", "important");
+  mirror.style.setProperty("scroll-snap-type", "none", "important");
+  mirror.style.setProperty("overflow-anchor", "none", "important");
+}
+
 function copyRuntimeState(source: Element, mirror: Element): void {
   if (source instanceof HTMLElement && mirror instanceof HTMLElement) {
     mirror.scrollLeft = source.scrollLeft;
@@ -137,7 +158,11 @@ export function SvgLiveDomProvider({
   const mirrorDocumentRef = useRef<HTMLElement | null>(null);
   const nodeMapRef = useRef(new WeakMap<Node, Node>());
   const frameRef = useRef(0);
+  const visualFrameRef = useRef(0);
+  const animationRefreshFrameRef = useRef(0);
   const rebuildRequestedRef = useRef(false);
+  const activeScrollersRef = useRef(new Map<HTMLElement, ActiveScroller>());
+  const animationPairsRef = useRef(new Map<Animation, Animation>());
   const [surfaces, setSurfaces] = useState<SurfaceRect[]>([]);
   const frameTimesRef = useRef<number[]>([]);
   const syncTimesRef = useRef<number[]>([]);
@@ -152,6 +177,26 @@ export function SvgLiveDomProvider({
     if (!source || !host) return;
     let destroyed = false;
     let surfaceObserver: ResizeObserver | null = null;
+
+    const recordMetrics = (now: number) => {
+      const frameDelta = now - lastFrameAtRef.current;
+      if (lastFrameAtRef.current > 0 && frameDelta > 0.1 && frameDelta <= 100) {
+        frameTimesRef.current.push(frameDelta);
+        if (frameTimesRef.current.length > 240) frameTimesRef.current.shift();
+      }
+      if (frameDelta > 0.1) lastFrameAtRef.current = now;
+      if (now - lastMetricsAtRef.current < 500) return;
+      lastMetricsAtRef.current = now;
+      const frames = [...frameTimesRef.current].sort((a, b) => a - b);
+      const syncs = syncTimesRef.current;
+      setDiagnostics((current) => ({
+        ...current,
+        averageFrameMs: frames.length ? frames.reduce((sum, value) => sum + value, 0) / frames.length : 0,
+        p95FrameMs: frames[Math.floor(frames.length * 0.95)] ?? 0,
+        worstFrameMs: frames.at(-1) ?? 0,
+        averageSyncMs: syncs.length ? syncs.reduce((sum, value) => sum + value, 0) / syncs.length : 0,
+      }));
+    };
 
     const measureSurfaces = () => {
       if (destroyed) return;
@@ -179,35 +224,95 @@ export function SvgLiveDomProvider({
       const mirror = mirrorDocumentRef.current;
       if (mirror) mirror.style.transform = `translate3d(${-window.scrollX}px, ${-window.scrollY}px, 0)`;
       measureSurfaces();
-      if (lastFrameAtRef.current > 0 && now - lastFrameAtRef.current <= 100) {
-        frameTimesRef.current.push(now - lastFrameAtRef.current);
-        if (frameTimesRef.current.length > 240) frameTimesRef.current.shift();
-      }
-      lastFrameAtRef.current = now;
       syncTimesRef.current.push(performance.now() - syncStarted);
       if (syncTimesRef.current.length > 240) syncTimesRef.current.shift();
-      if (now - lastMetricsAtRef.current >= 500) {
-        lastMetricsAtRef.current = now;
-        const frames = [...frameTimesRef.current].sort((a, b) => a - b);
-        const syncs = syncTimesRef.current;
-        setDiagnostics((current) => ({
-          ...current,
-          averageFrameMs: frames.length ? frames.reduce((sum, value) => sum + value, 0) / frames.length : 0,
-          p95FrameMs: frames[Math.floor(frames.length * 0.95)] ?? 0,
-          worstFrameMs: frames.at(-1) ?? 0,
-          averageSyncMs: syncs.length ? syncs.reduce((sum, value) => sum + value, 0) / syncs.length : 0,
-        }));
-      }
+      recordMetrics(now);
     };
 
     const scheduleAlignment = () => {
       if (!frameRef.current) frameRef.current = window.requestAnimationFrame(alignMirror);
     };
 
+    const scheduleVisualSync = () => {
+      if (!visualFrameRef.current) visualFrameRef.current = window.requestAnimationFrame(syncVisualState);
+    };
+
+    const refreshAnimationPairs = () => {
+      animationRefreshFrameRef.current = 0;
+      const nextPairs = new Map<Animation, Animation>();
+      const occurrenceByTarget = new Map<Element, Map<string, number>>();
+      for (const sourceAnimation of source.getAnimations({ subtree: true })) {
+        const effect = sourceAnimation.effect;
+        if (!(effect instanceof KeyframeEffect)) continue;
+        const sourceTarget = effect.target;
+        if (!(sourceTarget instanceof Element)) continue;
+        const mirrorTarget = nodeMapRef.current.get(sourceTarget);
+        if (!(mirrorTarget instanceof Element)) continue;
+
+        const identity = animationIdentity(sourceAnimation);
+        const targetOccurrences = occurrenceByTarget.get(sourceTarget) ?? new Map<string, number>();
+        const occurrence = targetOccurrences.get(identity) ?? 0;
+        targetOccurrences.set(identity, occurrence + 1);
+        occurrenceByTarget.set(sourceTarget, targetOccurrences);
+
+        let mirrorAnimation = animationPairsRef.current.get(sourceAnimation);
+        if (!mirrorAnimation) {
+          mirrorAnimation = mirrorTarget.getAnimations().filter((candidate) => animationIdentity(candidate) === identity)[occurrence];
+        }
+        if (!mirrorAnimation && identity === "waapi") {
+          try {
+            mirrorAnimation = mirrorTarget.animate(effect.getKeyframes(), effect.getTiming());
+          } catch { /* Some browser-owned animation effects cannot be recreated. */ }
+        }
+        if (!mirrorAnimation) continue;
+        mirrorAnimation.pause();
+        nextPairs.set(sourceAnimation, mirrorAnimation);
+      }
+      animationPairsRef.current = nextPairs;
+      scheduleVisualSync();
+    };
+
+    const scheduleAnimationRefresh = () => {
+      if (!animationRefreshFrameRef.current) animationRefreshFrameRef.current = window.requestAnimationFrame(refreshAnimationPairs);
+    };
+
+    function syncVisualState(now: number) {
+      visualFrameRef.current = 0;
+      const started = performance.now();
+      for (const [sourceScroller, state] of activeScrollersRef.current) {
+        const left = sourceScroller.scrollLeft;
+        const top = sourceScroller.scrollTop;
+        state.mirror.scrollLeft = left;
+        state.mirror.scrollTop = top;
+        if (Math.abs(left - state.lastLeft) < 0.01 && Math.abs(top - state.lastTop) < 0.01) state.stableFrames += 1;
+        else state.stableFrames = 0;
+        state.lastLeft = left;
+        state.lastTop = top;
+        if (state.stableFrames >= 8) activeScrollersRef.current.delete(sourceScroller);
+      }
+
+      let hasRunningAnimation = false;
+      for (const [sourceAnimation, mirrorAnimation] of animationPairsRef.current) {
+        if (sourceAnimation.playState === "idle") continue;
+        try {
+          mirrorAnimation.playbackRate = sourceAnimation.playbackRate;
+          mirrorAnimation.currentTime = sourceAnimation.currentTime;
+        } catch { /* A disconnected/replaced animation will be removed on refresh. */ }
+        if (sourceAnimation.playState === "running") hasRunningAnimation = true;
+      }
+
+      syncTimesRef.current.push(performance.now() - started);
+      if (syncTimesRef.current.length > 240) syncTimesRef.current.shift();
+      recordMetrics(now);
+      if (activeScrollersRef.current.size > 0 || hasRunningAnimation) scheduleVisualSync();
+    }
+
     const rebuildMirror = () => {
       rebuildRequestedRef.current = false;
       const started = performance.now();
       const prepared = prepareMirror(source);
+      animationPairsRef.current.clear();
+      activeScrollersRef.current.clear();
       host.replaceChildren(prepared.root);
       mirrorDocumentRef.current = prepared.root;
       nodeMapRef.current = prepared.nodes;
@@ -216,6 +321,7 @@ export function SvgLiveDomProvider({
       host.style.background = bodyStyle.background;
       setDiagnostics((current) => ({ ...current, cloneCount: current.cloneCount + 1, lastCloneMs: performance.now() - started, mirroredNodes: prepared.count }));
       measureSurfaces();
+      scheduleAnimationRefresh();
     };
 
     const scheduleRebuild = () => {
@@ -255,6 +361,7 @@ export function SvgLiveDomProvider({
       }
       if (rebuild) scheduleRebuild();
       else measureSurfaces();
+      scheduleAnimationRefresh();
     });
 
     const syncControl = (event: Event) => {
@@ -272,9 +379,19 @@ export function SvgLiveDomProvider({
       if (!(target instanceof HTMLElement)) return;
       const mirror = nodeMapRef.current.get(target);
       if (!(mirror instanceof HTMLElement)) return;
+      prepareMirrorScroller(mirror);
       mirror.scrollLeft = target.scrollLeft;
       mirror.scrollTop = target.scrollTop;
+      activeScrollersRef.current.set(target, {
+        mirror,
+        lastLeft: target.scrollLeft,
+        lastTop: target.scrollTop,
+        stableFrames: 0,
+      });
+      scheduleVisualSync();
     };
+
+    const refreshAnimations = () => scheduleAnimationRefresh();
 
     surfaceObserver = new ResizeObserver(measureSurfaces);
     rebuildMirror();
@@ -286,11 +403,21 @@ export function SvgLiveDomProvider({
     source.addEventListener("input", syncControl, true);
     source.addEventListener("change", syncControl, true);
     source.addEventListener("scroll", syncElementScroll, true);
+    source.addEventListener("animationstart", refreshAnimations, true);
+    source.addEventListener("animationcancel", refreshAnimations, true);
+    source.addEventListener("animationend", refreshAnimations, true);
+    source.addEventListener("transitionrun", refreshAnimations, true);
+    source.addEventListener("transitioncancel", refreshAnimations, true);
+    source.addEventListener("transitionend", refreshAnimations, true);
     return () => {
       destroyed = true;
       observer.disconnect();
       surfaceObserver?.disconnect();
       if (frameRef.current) window.cancelAnimationFrame(frameRef.current);
+      if (visualFrameRef.current) window.cancelAnimationFrame(visualFrameRef.current);
+      if (animationRefreshFrameRef.current) window.cancelAnimationFrame(animationRefreshFrameRef.current);
+      activeScrollersRef.current.clear();
+      animationPairsRef.current.clear();
       window.removeEventListener("scroll", scheduleAlignment, true);
       window.removeEventListener("resize", scheduleAlignment);
       window.visualViewport?.removeEventListener("resize", scheduleAlignment);
@@ -298,6 +425,12 @@ export function SvgLiveDomProvider({
       source.removeEventListener("input", syncControl, true);
       source.removeEventListener("change", syncControl, true);
       source.removeEventListener("scroll", syncElementScroll, true);
+      source.removeEventListener("animationstart", refreshAnimations, true);
+      source.removeEventListener("animationcancel", refreshAnimations, true);
+      source.removeEventListener("animationend", refreshAnimations, true);
+      source.removeEventListener("transitionrun", refreshAnimations, true);
+      source.removeEventListener("transitioncancel", refreshAnimations, true);
+      source.removeEventListener("transitionend", refreshAnimations, true);
     };
   }, []);
 
@@ -330,6 +463,6 @@ export function SvgLiveDomProvider({
       </div>
       <div style={{ position: "absolute", inset: 0, background: tint, boxShadow: "inset 0 1px rgba(255,255,255,.72)" }} />
     </div>
-    {debug && <output data-svg-live-debug="" style={{ position: "fixed", zIndex: 2147483647, left: 8, bottom: 8, padding: "7px 9px", borderRadius: 8, color: "#d9ff65", background: "rgba(7,21,47,.92)", font: "11px/1.35 ui-monospace,monospace", pointerEvents: "none", whiteSpace: "pre" }}>{`SVG live DOM · ${surfaces.length} surfaces\n${diagnostics.mirroredNodes} nodes · clone ${diagnostics.lastCloneMs.toFixed(1)} ms · rebuilds ${diagnostics.cloneCount}\nframe avg/p95/worst ${diagnostics.averageFrameMs.toFixed(1)} / ${diagnostics.p95FrameMs.toFixed(1)} / ${diagnostics.worstFrameMs.toFixed(1)} ms\nmirror sync avg ${diagnostics.averageSyncMs.toFixed(2)} ms`}</output>}
+    {debug && <output data-svg-live-debug="" style={{ position: "fixed", zIndex: 2147483647, left: 8, bottom: 8, padding: "7px 9px", borderRadius: 8, color: "#d9ff65", background: "rgba(7,21,47,.92)", font: "11px/1.35 ui-monospace,monospace", pointerEvents: "none", whiteSpace: "pre" }}>{`SVG live DOM · ${surfaces.length} surfaces\n${diagnostics.mirroredNodes} nodes · clone ${diagnostics.lastCloneMs.toFixed(1)} ms · rebuilds ${diagnostics.cloneCount}\n${animationPairsRef.current.size} live animations · ${activeScrollersRef.current.size} active scrollers\nframe avg/p95/worst ${diagnostics.averageFrameMs.toFixed(1)} / ${diagnostics.p95FrameMs.toFixed(1)} / ${diagnostics.worstFrameMs.toFixed(1)} ms\nmirror sync avg ${diagnostics.averageSyncMs.toFixed(2)} ms`}</output>}
   </>;
 }

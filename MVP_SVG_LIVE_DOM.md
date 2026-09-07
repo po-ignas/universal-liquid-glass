@@ -51,6 +51,10 @@ scroll/resize updates are coalesced through one animation frame.
 Nested element scroll offsets are mirrored directly, so touch/trackpad-driven
 carousels and card rails remain at the same live position beneath the glass;
 those visual changes are otherwise invisible to `MutationObserver`.
+While a rail remains in momentum/snap motion, its source offset is sampled on
+every animation frame and the mirror's own smoothing/snapping is disabled.
+CSS transitions, CSS animations, and recreatable Web Animations are paired to
+the source timeline and likewise synchronized only while active.
 
 Delivery Market was exercised locally in Chromium with its real page tree:
 

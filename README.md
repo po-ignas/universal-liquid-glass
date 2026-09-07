@@ -99,7 +99,8 @@ one inert, accessibility-hidden DOM mirror, filters one viewport-sized layer
 with SVG displacement, and clips that layer to all visible `GlassSurface`
 rectangles. This path performs no screenshot capture or application-managed
 texture upload and is intended only for explicit integration testing. It
-trades capture latency for duplicated DOM/layout work and has documented
+continuously follows active nested scrollers and CSS/Web Animation timelines
+instead of copying only their settled result. It trades capture latency for duplicated DOM/layout work and has documented
 limitations around ID-based CSS, media/canvas, portals, and fixed descendants;
 it is not the default WebGL renderer.
 

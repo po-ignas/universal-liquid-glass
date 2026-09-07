@@ -113,6 +113,11 @@ visible glass surfaces.
 Nested element scroll offsets are synchronized through one capturing listener.
 This covers horizontally dragged carousels and other scroll containers whose
 visual position changes do not produce DOM mutations.
+The hardened follow-up keeps sampling an active scroller through momentum and
+snap settling, with independent mirror smoothing/snap disabled. It also pairs
+CSS transitions, CSS animations, and recreatable Web Animations with their
+source timelines so intermediate visual states, rather than only final DOM
+values, appear beneath the glass.
 
 On the local Delivery Market page, its initial mirror of 2,319 nodes took
 41.7–63.9 ms across observed reloads. A mobile repeated-scroll sample reported
