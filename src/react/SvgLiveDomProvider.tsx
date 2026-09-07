@@ -608,6 +608,12 @@ export function SvgLiveDomProvider({
     if (loadingOverlay && !glassReady) setOverlayVisible(true);
   }, [glassReady, loadingOverlay]);
 
+  useEffect(() => {
+    if (!glassReady || !overlayVisible) return;
+    const removalTimer = window.setTimeout(() => setOverlayVisible(false), 220);
+    return () => window.clearTimeout(removalTimer);
+  }, [glassReady, overlayVisible]);
+
   const clipPath = surfaces.map(roundedRectPath).join(" ");
   const effectiveBlur = surfaces.reduce((maximum, surface) => Math.max(maximum, surface.blur), blur);
   const layerStyle: CSSProperties = {
