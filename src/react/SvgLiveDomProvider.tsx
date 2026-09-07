@@ -44,6 +44,10 @@ interface Diagnostics {
 }
 
 function copyRuntimeState(source: Element, mirror: Element): void {
+  if (source instanceof HTMLElement && mirror instanceof HTMLElement) {
+    mirror.scrollLeft = source.scrollLeft;
+    mirror.scrollTop = source.scrollTop;
+  }
   if (source instanceof HTMLInputElement && mirror instanceof HTMLInputElement) {
     mirror.value = source.value;
     mirror.checked = source.checked;
@@ -259,6 +263,19 @@ export function SvgLiveDomProvider({
       if (target instanceof Element && mirror instanceof Element) copyRuntimeState(target, mirror);
     };
 
+    // Element scrolling (carousels, rails, nested panels) changes visual state
+    // without changing DOM attributes, so MutationObserver cannot see it.
+    // Mirror that state directly on the corresponding cloned element. Scroll
+    // does not bubble, but a capturing listener on the source root receives it.
+    const syncElementScroll = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const mirror = nodeMapRef.current.get(target);
+      if (!(mirror instanceof HTMLElement)) return;
+      mirror.scrollLeft = target.scrollLeft;
+      mirror.scrollTop = target.scrollTop;
+    };
+
     surfaceObserver = new ResizeObserver(measureSurfaces);
     rebuildMirror();
     observer.observe(source, { subtree: true, childList: true, characterData: true, attributes: true });
@@ -268,6 +285,7 @@ export function SvgLiveDomProvider({
     window.visualViewport?.addEventListener("scroll", scheduleAlignment, { passive: true });
     source.addEventListener("input", syncControl, true);
     source.addEventListener("change", syncControl, true);
+    source.addEventListener("scroll", syncElementScroll, true);
     return () => {
       destroyed = true;
       observer.disconnect();
@@ -279,6 +297,7 @@ export function SvgLiveDomProvider({
       window.visualViewport?.removeEventListener("scroll", scheduleAlignment);
       source.removeEventListener("input", syncControl, true);
       source.removeEventListener("change", syncControl, true);
+      source.removeEventListener("scroll", syncElementScroll, true);
     };
   }, []);
 

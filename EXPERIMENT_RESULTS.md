@@ -110,6 +110,10 @@ synchronizes mutations and form state, strips duplicate identity/accessibility
 references, and uses one viewport-sized filtered layer clipped across all
 visible glass surfaces.
 
+Nested element scroll offsets are synchronized through one capturing listener.
+This covers horizontally dragged carousels and other scroll containers whose
+visual position changes do not produce DOM mutations.
+
 On the local Delivery Market page, its initial mirror of 2,319 nodes took
 41.7–63.9 ms across observed reloads. A mobile repeated-scroll sample reported
 0.45 ms average mirror alignment/surface-measurement work, no rebuilds, and two

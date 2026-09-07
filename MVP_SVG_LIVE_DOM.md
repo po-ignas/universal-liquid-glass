@@ -48,6 +48,9 @@ registered glass surface. This keeps a single mirror/filter for a desktop
 header or mobile header plus footer; it does not create one duplicate per
 surface or a document-height SVG filter allocation. Window and visual viewport
 scroll/resize updates are coalesced through one animation frame.
+Nested element scroll offsets are mirrored directly, so touch/trackpad-driven
+carousels and card rails remain at the same live position beneath the glass;
+those visual changes are otherwise invisible to `MutationObserver`.
 
 Delivery Market was exercised locally in Chromium with its real page tree:
 
