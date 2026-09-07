@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { GlassProvider, GlassSurface, useGlassRenderer, type GlassDebugView } from "../src/index.js";
+import { DeliveryMarketFaqFixture } from "./DeliveryMarketFaqFixture.js";
 import "./demo.css";
 
 const cards = [
@@ -42,6 +43,7 @@ function Demo() {
           <div className="rings" aria-hidden="true"><i /><i /><i /><i /></div>
         </section>
         <section className="ticker" aria-label="Live changing content"><span>DOM UPDATE {pulse}</span><span>REFRACT · SCATTER · TRANSMIT ·</span></section>
+        <DeliveryMarketFaqFixture />
         <section id="optics-test" className="optics-test" aria-label="Physics optics visual test">
           <div className="optics-test-art" aria-hidden="true">
             <i className="horizontal horizontal-a" /><i className="horizontal horizontal-b" />
