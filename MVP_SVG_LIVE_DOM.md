@@ -56,6 +56,12 @@ every animation frame and the mirror's own smoothing/snapping is disabled.
 CSS transitions, CSS animations, and recreatable Web Animations are paired to
 the source timeline and likewise synchronized only while active.
 
+The follow-up optical profile replaces uniform noise with a generated rounded-
+surface displacement field modeled after the Lens Local bevel. Defaults now
+use 1.4 px scattering, a 5.5% white tint, a directional rim, and edge-focused
+refraction. An optional readiness overlay waits for the first mirror, lens map,
+font readiness, and two paint frames instead of relying on a fixed guess.
+
 Delivery Market was exercised locally in Chromium with its real page tree:
 
 - 2,319 mirrored nodes;

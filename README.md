@@ -104,6 +104,12 @@ instead of copying only their settled result. It trades capture latency for dupl
 limitations around ID-based CSS, media/canvas, portals, and fixed descendants;
 it is not the default WebGL renderer.
 
+The SVG displacement map uses the same high-level material intent as the Lens
+Local renderer: a low-opacity white tint, light scattering, an analytic rounded
+edge bevel, and directional rim highlights. Consumers may pass a
+`loadingOverlay`; it remains visible until the mirror, lens geometry, fonts,
+and two paint frames are ready, plus the optional `minimumLoadingMs`.
+
 ## Known limitations
 
 - DOM rasterization is not a browser compositor API. Video frames, WebGL/canvas content, cross-origin images without CORS, iframes, complex filters, and some advanced CSS may be absent or stale in snapshots.

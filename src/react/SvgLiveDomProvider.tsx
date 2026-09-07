@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -8,6 +9,7 @@ import {
   type CSSProperties,
   type HTMLAttributes,
   type PropsWithChildren,
+  type ReactNode,
 } from "react";
 
 const SURFACE_SELECTOR = "[data-liquid-glass-surface]";
@@ -31,6 +33,10 @@ export interface SvgLiveDomProviderProps extends PropsWithChildren<Omit<HTMLAttr
   blur?: number;
   /** Stable translucent tint over every registered surface. */
   tint?: string;
+  /** Optional full-screen cover shown until the first correct glass frame. */
+  loadingOverlay?: ReactNode;
+  /** Minimum overlay visibility, preventing a distracting one-frame flash. */
+  minimumLoadingMs?: number;
 }
 
 interface Diagnostics {
@@ -62,6 +68,71 @@ function prepareMirrorScroller(mirror: HTMLElement): void {
   mirror.style.setProperty("scroll-behavior", "auto", "important");
   mirror.style.setProperty("scroll-snap-type", "none", "important");
   mirror.style.setProperty("overflow-anchor", "none", "important");
+}
+
+function roundedBoxDistance(x: number, y: number, halfWidth: number, halfHeight: number, radius: number): number {
+  const qx = Math.abs(x) - halfWidth + radius;
+  const qy = Math.abs(y) - halfHeight + radius;
+  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius;
+}
+
+function createLensDisplacementMap(rects: SurfaceRect[], viewportWidth: number, viewportHeight: number): string {
+  const resolutionScale = Math.min(1, 1200 / Math.max(viewportWidth, viewportHeight));
+  const width = Math.max(1, Math.round(viewportWidth * resolutionScale));
+  const height = Math.max(1, Math.round(viewportHeight * resolutionScale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) return "";
+  const pixels = context.createImageData(width, height);
+  for (let offset = 0; offset < pixels.data.length; offset += 4) {
+    pixels.data[offset] = 128;
+    pixels.data[offset + 1] = 128;
+    pixels.data[offset + 2] = 128;
+    pixels.data[offset + 3] = 255;
+  }
+
+  const distanceAt = (rect: SurfaceRect, x: number, y: number) => roundedBoxDistance(
+    x - rect.x - rect.width / 2,
+    y - rect.y - rect.height / 2,
+    rect.width / 2,
+    rect.height / 2,
+    Math.max(0, Math.min(rect.radius, rect.width / 2, rect.height / 2)),
+  );
+
+  for (const rect of rects) {
+    const left = Math.max(0, Math.floor(rect.x * resolutionScale));
+    const right = Math.min(width, Math.ceil((rect.x + rect.width) * resolutionScale));
+    const top = Math.max(0, Math.floor(rect.y * resolutionScale));
+    const bottom = Math.min(height, Math.ceil((rect.y + rect.height) * resolutionScale));
+    const bevel = Math.max(1, Math.min(112, Math.min(rect.width, rect.height) / 2 - 1));
+    for (let py = top; py < bottom; py += 1) {
+      for (let px = left; px < right; px += 1) {
+        const x = (px + 0.5) / resolutionScale;
+        const y = (py + 0.5) / resolutionScale;
+        const distance = distanceAt(rect, x, y);
+        if (distance > 0) continue;
+        const depth = -distance;
+        const progress = Math.min(1, depth / bevel);
+        // A shallow optical cap: zero at the physical edge and flat centre,
+        // strongest just inside the bevel like the Lens Local WebGL shader.
+        const response = Math.sin(Math.PI * progress) * Math.pow(1 - progress, 0.32);
+        if (response <= 0.001) continue;
+        const epsilon = 0.75;
+        const gradientX = distanceAt(rect, x + epsilon, y) - distanceAt(rect, x - epsilon, y);
+        const gradientY = distanceAt(rect, x, y + epsilon) - distanceAt(rect, x, y - epsilon);
+        const gradientLength = Math.hypot(gradientX, gradientY) || 1;
+        const normalX = gradientX / gradientLength;
+        const normalY = gradientY / gradientLength;
+        const pixelOffset = (py * width + px) * 4;
+        pixels.data[pixelOffset] = Math.round(128 + normalX * response * 127);
+        pixels.data[pixelOffset + 2] = Math.round(128 + normalY * response * 127);
+      }
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+  return canvas.toDataURL("image/png");
 }
 
 function copyRuntimeState(source: Element, mirror: Element): void {
@@ -146,9 +217,11 @@ function roundedRectPath(rect: SurfaceRect): string {
 export function SvgLiveDomProvider({
   children,
   debug = false,
-  displacement = 20,
-  blur = 0.9,
-  tint = "rgba(255,255,255,.14)",
+  displacement = 32,
+  blur = 1.4,
+  tint = "rgba(255,255,255,.055)",
+  loadingOverlay,
+  minimumLoadingMs = 180,
   className,
   style,
   ...props
@@ -164,6 +237,10 @@ export function SvgLiveDomProvider({
   const activeScrollersRef = useRef(new Map<HTMLElement, ActiveScroller>());
   const animationPairsRef = useRef(new Map<Animation, Animation>());
   const [surfaces, setSurfaces] = useState<SurfaceRect[]>([]);
+  const [lensMapUrl, setLensMapUrl] = useState("");
+  const [geometryReady, setGeometryReady] = useState(false);
+  const [glassReady, setGlassReady] = useState(false);
+  const [overlayVisible, setOverlayVisible] = useState(Boolean(loadingOverlay));
   const frameTimesRef = useRef<number[]>([]);
   const syncTimesRef = useRef<number[]>([]);
   const lastFrameAtRef = useRef(0);
@@ -434,6 +511,39 @@ export function SvgLiveDomProvider({
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (diagnostics.cloneCount === 0) return;
+    setLensMapUrl(createLensDisplacementMap(surfaces, window.innerWidth, window.innerHeight));
+    setGeometryReady(true);
+  }, [diagnostics.cloneCount, surfaces]);
+
+  useEffect(() => {
+    if (!geometryReady || diagnostics.cloneCount === 0 || glassReady) return;
+    let cancelled = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let timer = 0;
+    const fontsReady = document.fonts?.ready ?? Promise.resolve();
+    void fontsReady.then(() => {
+      if (cancelled) return;
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => {
+          timer = window.setTimeout(() => { if (!cancelled) setGlassReady(true); }, Math.max(0, minimumLoadingMs));
+        });
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(timer);
+    };
+  }, [diagnostics.cloneCount, geometryReady, glassReady, minimumLoadingMs]);
+
+  useEffect(() => {
+    if (loadingOverlay && !glassReady) setOverlayVisible(true);
+  }, [glassReady, loadingOverlay]);
+
   const clipPath = surfaces.map(roundedRectPath).join(" ");
   const layerStyle: CSSProperties = {
     position: "fixed",
@@ -448,12 +558,12 @@ export function SvgLiveDomProvider({
     <div ref={sourceRef} data-svg-live-source="" className={className} style={style} {...props}>{children}</div>
     <svg aria-hidden="true" style={{ position: "fixed", width: 0, height: 0, overflow: "hidden" }}>
       <defs>
-        <filter id={filterId} x="-6%" y="-8%" width="112%" height="116%" colorInterpolationFilters="sRGB">
-          <feTurbulence type="fractalNoise" baseFrequency="0.0035 0.008" numOctaves={1} seed={7} result="rawDistortion" />
-          <feGaussianBlur in="rawDistortion" stdDeviation={14} result="distortionMap" />
-          <feDisplacementMap in="SourceGraphic" in2="distortionMap" scale={displacement} xChannelSelector="R" yChannelSelector="B" result="warped" />
+        <filter id={filterId} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+          {lensMapUrl
+            ? <><feImage href={lensMapUrl} x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="lensMap" /><feDisplacementMap in="SourceGraphic" in2="lensMap" scale={displacement * 0.8} xChannelSelector="R" yChannelSelector="B" result="warped" /></>
+            : <feGaussianBlur in="SourceGraphic" stdDeviation={0.01} result="warped" />}
           <feGaussianBlur in="warped" stdDeviation={blur} result="softened" />
-          <feColorMatrix in="softened" type="saturate" values="1.08" />
+          <feColorMatrix in="softened" type="saturate" values="1.06" />
         </filter>
       </defs>
     </svg>
@@ -462,7 +572,24 @@ export function SvgLiveDomProvider({
         <div ref={mirrorHostRef} style={{ position: "absolute", inset: 0, width: "100vw", willChange: "transform" }} />
       </div>
       <div style={{ position: "absolute", inset: 0, background: tint, boxShadow: "inset 0 1px rgba(255,255,255,.72)" }} />
+      {surfaces.map((rect, index) => <div key={index} style={{
+        position: "absolute",
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
+        borderRadius: rect.radius,
+        border: "1px solid rgba(255,255,255,.66)",
+        background: "linear-gradient(145deg,rgba(255,255,255,.11),rgba(255,255,255,0) 44%,rgba(74,94,130,.035))",
+        boxShadow: "inset 0 1px 1px rgba(255,255,255,.82), inset 0 -1px 2px rgba(34,52,82,.13)",
+      }} />)}
     </div>
+    {overlayVisible && loadingOverlay && <div
+      data-svg-live-loading=""
+      aria-hidden={glassReady || undefined}
+      onTransitionEnd={() => { if (glassReady) setOverlayVisible(false); }}
+      style={{ position: "fixed", inset: 0, zIndex: 2147483646, opacity: glassReady ? 0 : 1, transition: "opacity 180ms ease", pointerEvents: glassReady ? "none" : "auto" }}
+    >{loadingOverlay}</div>}
     {debug && <output data-svg-live-debug="" style={{ position: "fixed", zIndex: 2147483647, left: 8, bottom: 8, padding: "7px 9px", borderRadius: 8, color: "#d9ff65", background: "rgba(7,21,47,.92)", font: "11px/1.35 ui-monospace,monospace", pointerEvents: "none", whiteSpace: "pre" }}>{`SVG live DOM · ${surfaces.length} surfaces\n${diagnostics.mirroredNodes} nodes · clone ${diagnostics.lastCloneMs.toFixed(1)} ms · rebuilds ${diagnostics.cloneCount}\n${animationPairsRef.current.size} live animations · ${activeScrollersRef.current.size} active scrollers\nframe avg/p95/worst ${diagnostics.averageFrameMs.toFixed(1)} / ${diagnostics.p95FrameMs.toFixed(1)} / ${diagnostics.worstFrameMs.toFixed(1)} ms\nmirror sync avg ${diagnostics.averageSyncMs.toFixed(2)} ms`}</output>}
   </>;
 }
