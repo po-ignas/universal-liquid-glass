@@ -1,4 +1,5 @@
 import html2canvas from "html2canvas-pro";
+import { planViewportCapture } from "./captureGeometry.js";
 
 export interface ViewportCaptureOptions {
   root: HTMLElement;
@@ -6,6 +7,10 @@ export interface ViewportCaptureOptions {
   ignore: (element: Element) => boolean;
   overscanX?: number;
   overscanY?: number;
+  scrollX?: number;
+  scrollY?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
 }
 
 const PRESERVE_LAYOUT_ATTRIBUTE = "data-liquid-glass-capture-hidden";
@@ -26,11 +31,16 @@ function prepareLayoutPreservingExclusions(document: Document): () => void {
 }
 
 /** Capture only the visible viewport, shared by every registered surface. */
-export async function captureViewport({ root, scale, ignore, overscanX = 0, overscanY = 0 }: ViewportCaptureOptions): Promise<HTMLCanvasElement> {
+export async function captureViewport({
+  root, scale, ignore, overscanX = 0, overscanY = 0,
+  scrollX = window.scrollX, scrollY = window.scrollY,
+  viewportWidth = window.innerWidth, viewportHeight = window.innerHeight,
+}: ViewportCaptureOptions): Promise<HTMLCanvasElement> {
   // Capturing the document element gives html2canvas its dedicated document-
   // bounds path. Cropping an arbitrary provider element with document-space
   // x/y can yield an empty canvas once the page scrolls.
   const captureRoot = root.ownerDocument.documentElement;
+  const geometry = planViewportCapture({ scrollX, scrollY, viewportWidth, viewportHeight, overscanX, overscanY });
   // html2canvas normally removes data-html2canvas-ignore nodes from its clone.
   // Removing an in-flow header collapses the cloned layout and shifts every
   // source pixel above its live viewport coordinate. Keep those boxes in the
@@ -44,16 +54,7 @@ export async function captureViewport({ root, scale, ignore, overscanX = 0, over
     capture = html2canvas(captureRoot, {
       backgroundColor: null,
       scale,
-      width: window.innerWidth + overscanX * 2,
-      height: window.innerHeight + overscanY * 2,
-      x: 0,
-      y: 0,
-      // Render the cloned document in viewport space. Normal content is shifted
-      // by the live scroll while fixed-position content remains fixed.
-      scrollX: overscanX - window.scrollX,
-      scrollY: overscanY - window.scrollY,
-      windowWidth: window.innerWidth,
-      windowHeight: window.innerHeight,
+      ...geometry,
       logging: false,
       useCORS: true,
       removeContainer: true,

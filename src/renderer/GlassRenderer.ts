@@ -121,6 +121,8 @@ export class GlassRenderer {
   private textureWidth = 1;
   private textureHeight = 1;
   private frameTimes: number[] = [];
+  private qualityFrameTimes: number[] = [];
+  private skipNextQualityFrame = false;
   private lastFrameAt = 0;
   private lastFrameMs = 0;
   private captureCount = 0;
@@ -378,18 +380,41 @@ export class GlassRenderer {
   private onMutation = (mutations: MutationRecord[]): void => {
     const relevant = mutations.some((mutation) => {
       if (isLibraryOwnedNode(mutation.target)) return false;
+      if (mutation.type === "attributes" && mutation.target instanceof Element) {
+        const computed = getComputedStyle(mutation.target);
+        const animated = computed.animationName !== "none"
+          || computed.transitionDuration.split(",").some((duration) => Number.parseFloat(duration) > 0);
+        if (animated && (mutation.attributeName === "class" || mutation.attributeName === "style")) return false;
+      }
+      let affectedElements: Element[];
       if (mutation.type === "childList") {
         const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
         if (changedNodes.length > 0 && changedNodes.every(isLibraryOwnedNode)) return false;
+        const addedElements = [...mutation.addedNodes].flatMap((node) => {
+          const element = node instanceof Element ? node : node.parentElement;
+          return element ? [element] : [];
+        });
+        // React commonly replaces one animated cosmetic node with another.
+        // The connected replacement gives us a tighter affected box than the
+        // broad parent and avoids treating animation restarts as page relayout.
+        affectedElements = addedElements.length > 0
+          ? addedElements
+          : mutation.target instanceof Element ? [mutation.target] : mutation.target.parentElement ? [mutation.target.parentElement] : [];
+      } else {
+        const element = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        affectedElements = element ? [element] : [];
       }
-      const element = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-      if (!element) return true;
+      if (affectedElements.length === 0) return true;
       const surfaceRects = Array.from(this.surfaces.values(), ({ rect }) => rect);
       const maximumSamplingMargin = Array.from(this.surfaces.values()).reduce(
         (margin, { options }) => Math.max(margin, options.thickness * options.refraction + options.blur * 2),
         0,
       );
-      return rectCanAffectSurface(element.getBoundingClientRect(), surfaceRects, maximumSamplingMargin);
+      return affectedElements.some((element) => {
+        const computed = getComputedStyle(element);
+        if (computed.animationName !== "none") return false;
+        return rectCanAffectSurface(element.getBoundingClientRect(), surfaceRects, maximumSamplingMargin);
+      });
     });
     if (!relevant) return;
     this.layoutDirty = true;
@@ -471,6 +496,8 @@ export class GlassRenderer {
   private onRouteChange = (): void => { window.setTimeout(() => this.invalidate("route change"), 0); };
   private onVisibilityChange = (): void => {
     this.frameTimes = [];
+    this.qualityFrameTimes = [];
+    this.skipNextQualityFrame = false;
     this.lastFrameAt = 0;
     this.lastFrameMs = 0;
     if (!document.hidden) this.invalidate("document visible");
@@ -508,6 +535,11 @@ export class GlassRenderer {
       this.lastFrameMs = now - this.lastFrameAt;
       this.frameTimes.push(this.lastFrameMs);
       if (this.frameTimes.length > 120) this.frameTimes.shift();
+      if (this.skipNextQualityFrame) this.skipNextQualityFrame = false;
+      else {
+        this.qualityFrameTimes.push(this.lastFrameMs);
+        if (this.qualityFrameTimes.length > 120) this.qualityFrameTimes.shift();
+      }
     }
     this.lastFrameAt = now;
     if (this.layoutDirty) this.measureSurfaces();
@@ -577,6 +609,10 @@ export class GlassRenderer {
     const reason = this.captureScheduler.beginCapture();
     if (!reason) return;
     const captureGeneration = this.textureFreshness.beginCapture();
+    // Keep the capture stall in public frame diagnostics, but do not mistake
+    // html2canvas main-thread time for shader draw pressure. Slow capture is
+    // governed by capturePolicy; WebGL quality adapts from render frames.
+    this.skipNextQualityFrame = true;
     this.lastCaptureAt = now;
     this.lastInvalidation = reason;
     this.captureCount += 1;
@@ -618,6 +654,10 @@ export class GlassRenderer {
         ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
         overscanX: overscan.x,
         overscanY: overscan.y,
+        scrollX: capturedViewport.scrollX,
+        scrollY: capturedViewport.scrollY,
+        viewportWidth: capturedViewport.width,
+        viewportHeight: capturedViewport.height,
       });
       if (this.destroyed) return;
       const duration = performance.now() - started;
@@ -785,7 +825,7 @@ export class GlassRenderer {
   }
 
   private evaluateQuality(captureMs: number): void {
-    const frameTiming = summarizeFrameTimes(this.frameTimes);
+    const frameTiming = summarizeFrameTimes(this.qualityFrameTimes);
     const proposed = adaptQuality(this.quality, { averageFrameMs: frameTiming.averageFrameMs, p95FrameMs: frameTiming.p95FrameMs, captureMs });
     if (QUALITY_ORDER.indexOf(proposed) < QUALITY_ORDER.indexOf(this.quality)) {
       this.stressSamples += 1; this.comfortableSamples = 0;
