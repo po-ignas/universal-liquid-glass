@@ -30,6 +30,13 @@ interface SurfaceRecord {
 const QUALITY_ORDER: GlassQuality[] = ["fallback", "low", "medium", "high"];
 const LIBRARY_OWNED_SELECTOR = "[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]";
 const POC_OVERSCAN_VIEWPORTS = 3;
+const MUTATION_OBSERVER_OPTIONS: MutationObserverInit = {
+  subtree: true,
+  childList: true,
+  characterData: true,
+  attributes: true,
+  attributeFilter: ["class", "style", "src", "hidden"],
+};
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
@@ -221,7 +228,7 @@ export class GlassRenderer {
     this.rootObserver = new ResizeObserver(this.onRootResize);
     this.rootObserver.observe(this.root);
     this.mutationObserver = new MutationObserver(this.onMutation);
-    this.mutationObserver.observe(this.root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "src", "hidden"] });
+    this.observeMutations();
     window.addEventListener("scroll", this.onScroll, { passive: true, capture: true });
     window.addEventListener("wheel", this.onScrollIntent, { passive: true, capture: true });
     window.addEventListener("touchmove", this.onScrollIntent, { passive: true, capture: true });
@@ -435,6 +442,10 @@ export class GlassRenderer {
     }
     this.mutationTimer = window.setTimeout(() => this.queueCapture("DOM mutation"), this.mutationDebounceMs);
   };
+
+  private observeMutations(): void {
+    this.mutationObserver.observe(this.root, MUTATION_OBSERVER_OPTIONS);
+  }
 
   private onScrollIntent = (): void => {
     if (this.quality === "fallback") return;
@@ -658,17 +669,29 @@ export class GlassRenderer {
     };
     this.currentCaptureScale = scale;
     try {
-      const result = await captureViewport({
-        root: this.root,
-        scale,
-        ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
-        overscanX: overscan.x,
-        overscanY: overscan.y,
-        scrollX: capturedViewport.scrollX,
-        scrollY: capturedViewport.scrollY,
-        viewportWidth: capturedViewport.width,
-        viewportHeight: capturedViewport.height,
-      });
+      // captureViewport synchronously prepares ignored live nodes and creates
+      // html2canvas's clone before returning its asynchronous raster promise.
+      // Do not let those capture-owned mutations invalidate their own source.
+      // Observation resumes immediately, so real app changes during the slow
+      // raster still obsolete this generation through the normal safeguards.
+      this.mutationObserver.disconnect();
+      let capturePromise: Promise<HTMLCanvasElement>;
+      try {
+        capturePromise = captureViewport({
+          root: this.root,
+          scale,
+          ignore: (element) => element.matches(LIBRARY_OWNED_SELECTOR),
+          overscanX: overscan.x,
+          overscanY: overscan.y,
+          scrollX: capturedViewport.scrollX,
+          scrollY: capturedViewport.scrollY,
+          viewportWidth: capturedViewport.width,
+          viewportHeight: capturedViewport.height,
+        });
+      } finally {
+        if (!this.destroyed) this.observeMutations();
+      }
+      const result = await capturePromise;
       if (this.destroyed) return;
       const duration = performance.now() - started;
       this.recordCaptureDuration(duration);
