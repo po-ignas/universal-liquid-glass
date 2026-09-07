@@ -28,7 +28,11 @@ uniform vec2 u_textureSize;
 uniform vec4 u_rect;
 uniform float u_radius;
 uniform float u_refraction;
+uniform float u_thickness;
+uniform float u_bevelWidth;
+uniform float u_ior;
 uniform float u_blur;
+uniform float u_specular;
 uniform float u_chromatic;
 uniform float u_tintOpacity;
 uniform vec3 u_tint;
@@ -39,6 +43,12 @@ uniform float u_sourceReady;
 float roundedBox(vec2 point, vec2 halfSize, float radius) {
   vec2 q = abs(point) - halfSize + radius;
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
+}
+float lensHeight(vec2 point, vec2 halfSize, float radius, float bevel, float thickness) {
+  float depth = max(-roundedBox(point, halfSize, radius), 0.0);
+  float t = clamp(depth / bevel, 0.0, 1.0);
+  float edgeAxis = 1.0 - t;
+  return thickness * sqrt(max(1.0 - edgeAxis * edgeAxis, 0.0));
 }
 vec3 backdrop(vec2 uv, vec2 delta) {
   vec3 color = texture(u_backdrop, clamp(uv, 0.0, 1.0)).rgb * 0.28;
@@ -81,74 +91,60 @@ void main() {
     return;
   }
   float depth = max(-signedDistance, 0.0);
-  // Wide, shallow navigation surfaces need a thinner optical profile than panels.
-  float thickness = min(u_rect.z, u_rect.w);
-  float aspectRatio = max(u_rect.z, u_rect.w) / max(thickness, 1.0);
-  float normalizedThickness = clamp(thickness / 96.0, 0.5, 1.0);
-  float shallowSurface = smoothstep(2.5, 7.5, aspectRatio);
-  float opticalProfile = normalizedThickness * mix(1.0, 0.58, shallowSurface);
-  float edgeWidth = clamp(thickness * mix(0.12, 0.20, opticalProfile), 4.5, 16.0);
-  float edgeBase = 1.0 - smoothstep(0.0, edgeWidth, depth);
-  float edge = pow(clamp(edgeBase, 0.0, 1.0), 3.4);
-  float lipWidth = clamp(thickness * 0.035, 1.25, 3.5);
-  float lip = exp(-depth / lipWidth);
-  float refractionStrength = opticalProfile * clamp(edge * 0.68 + lip * 0.32, 0.0, 1.0);
+  float thickness = max(u_thickness, 0.01);
+  float bevelLimit = max(min(halfSize.x, halfSize.y) - 1.0, 1.0);
+  float bevel = min(max(u_bevelWidth, 1.0), bevelLimit);
+  float debugStrength = u_debugMode > 1.5 ? 4.5 : 1.0;
+
+  // The cap height and its numerical gradient describe one continuous virtual
+  // lens. The flat interior is the top of that same surface, not a separately
+  // tuned displacement zone.
+  float epsilon = 0.75;
+  float height = lensHeight(v_local, halfSize, radius, bevel, thickness);
+  vec2 heightGradient = vec2(
+    lensHeight(v_local + vec2(epsilon, 0.0), halfSize, radius, bevel, thickness)
+      - lensHeight(v_local - vec2(epsilon, 0.0), halfSize, radius, bevel, thickness),
+    lensHeight(v_local + vec2(0.0, epsilon), halfSize, radius, bevel, thickness)
+      - lensHeight(v_local - vec2(0.0, epsilon), halfSize, radius, bevel, thickness)
+  ) / (2.0 * epsilon);
+  float slope = min(length(heightGradient), 4.0);
+  vec2 slopeDirection = slope > 0.0001 ? heightGradient / length(heightGradient) : vec2(0.0);
+  float incidentAngle = atan(slope);
+  float transmittedAngle = asin(clamp(sin(incidentAngle) / max(u_ior, 1.001), 0.0, 0.999));
+  float displacement = height * tan(incidentAngle - transmittedAngle)
+    * u_refraction * debugStrength;
+  vec2 offset = -slopeDirection * displacement / max(u_sourceSize, vec2(1.0));
+
+  float lensResponse = clamp(displacement / max(thickness * 0.35, 1.0), 0.0, 1.0);
   if (u_debugMode > 2.5) {
-    outColor = vec4(vec3(refractionStrength) * alpha, alpha);
+    outColor = vec4(vec3(lensResponse) * alpha, alpha);
     return;
   }
-  float epsilon = 1.0;
-  vec2 gradient = vec2(
-    roundedBox(v_local + vec2(epsilon, 0.0), halfSize, radius) - roundedBox(v_local - vec2(epsilon, 0.0), halfSize, radius),
-    roundedBox(v_local + vec2(0.0, epsilon), halfSize, radius) - roundedBox(v_local - vec2(0.0, epsilon), halfSize, radius));
-  vec2 radial = v_local / max(halfSize, vec2(1.0));
-  vec2 normal = length(gradient) > 0.001 ? normalize(gradient) : normalize(radial + vec2(0.0001));
-  vec2 lensDirection = normalize(mix(radial, normal, smoothstep(0.12, 0.75, edge)) + vec2(0.0001));
-  float debugStrength = u_debugMode > 1.5 ? 4.5 : 1.0;
-  float opticalThickness = min(thickness, 96.0);
 
-  // A separate low-frequency volume term gives the material a coherent body
-  // without widening the calibrated edge band. On shallow bars the short axis
-  // does most of the bending; long-axis movement returns only at the endcaps.
-  vec2 bodyPosition = clamp(radial, vec2(-1.0), vec2(1.0));
-  vec2 bodyCurve = bodyPosition * (vec2(1.0) - bodyPosition * bodyPosition);
-  float bodyInterior = smoothstep(0.0, max(edgeWidth * 1.35, 1.0), depth);
-  float endcapStart = clamp(1.0 - (u_radius / max(halfSize.x, 1.0)), 0.56, 0.94);
-  float endcap = smoothstep(
-    max(endcapStart - 0.10, 0.0),
-    min(endcapStart + 0.025, 0.985),
-    abs(bodyPosition.x));
-  float bodyVerticalStrength = mix(0.12, 0.22, shallowSurface);
-  float bodyHorizontalStrength = mix(0.12, mix(0.025, 0.18, endcap), shallowSurface);
-  vec2 bodyPixels = vec2(
-    bodyCurve.x * bodyHorizontalStrength,
-    bodyCurve.y * bodyVerticalStrength
-  ) * u_refraction * debugStrength * opticalThickness * opticalProfile * bodyInterior;
-  float lensPixels = u_refraction * debugStrength * opticalThickness * opticalProfile
-    * (0.0005 + edge * 0.058 + lip * 0.060);
-  vec2 offset = -(bodyPixels + lensDirection * lensPixels) / u_sourceSize;
-  float scatteringProfile = mix(0.34, 0.78, opticalProfile);
-  float scatteringShape = mix(0.28, 1.0, pow(clamp(edge * 0.70 + lip * 0.30, 0.0, 1.0), 1.3));
-  vec2 blurStep = (vec2(1.0) / max(u_textureSize, vec2(1.0)))
-    * max(u_blur * scatteringProfile * scatteringShape, 0.30);
+  // Frost is deliberately independent from the geometric displacement.
+  vec2 blurStep = vec2(max(u_blur, 0.0)) / max(u_textureSize, vec2(1.0));
   vec3 color = backdrop(v_uv + offset, blurStep);
   if (u_chromatic > 0.001) {
-    float chromaticShape = pow(clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0), 1.5);
-    vec2 split = lensDirection * chromaticShape * opticalProfile * u_chromatic * (u_debugMode > 1.5 ? 4.0 : 0.85) / u_sourceSize;
+    vec2 split = slopeDirection * displacement * u_chromatic * 0.08 / max(u_sourceSize, vec2(1.0));
     vec3 redSample = texture(u_backdrop, clamp(v_uv + offset + split, 0.0, 1.0)).rgb;
     vec3 blueSample = texture(u_backdrop, clamp(v_uv + offset - split, 0.0, 1.0)).rgb;
-    color.r = mix(color.r, redSample.r, 0.16);
-    color.b = mix(color.b, blueSample.b, 0.16);
+    color.r = mix(color.r, redSample.r, 0.14);
+    color.b = mix(color.b, blueSample.b, 0.14);
   }
-  float rim = clamp(edge * 0.72 + lip * 0.28, 0.0, 1.0);
-  float bodyContrast = mix(0.94, 0.97, rim);
-  float transmissionLift = mix(0.035, 0.015, rim);
-  color = color * bodyContrast + vec3(transmissionLift);
-  float fresnel = pow(rim, 2.1);
-  float directional = pow(max(dot(normal, normalize(vec2(-0.55, -0.83))), 0.0), 7.0);
-  float specular = directional * pow(lip, 0.75) * 0.22;
+
+  vec2 shapeGradient = vec2(
+    roundedBox(v_local + vec2(epsilon, 0.0), halfSize, radius) - roundedBox(v_local - vec2(epsilon, 0.0), halfSize, radius),
+    roundedBox(v_local + vec2(0.0, epsilon), halfSize, radius) - roundedBox(v_local - vec2(0.0, epsilon), halfSize, radius)
+  );
+  vec2 outwardNormal = length(shapeGradient) > 0.0001 ? normalize(shapeGradient) : vec2(0.0, -1.0);
+  vec3 surfaceNormal = normalize(vec3(-heightGradient, 1.0));
+  float bevelMask = 1.0 - smoothstep(0.0, bevel, depth);
+  float opticalLip = 1.0 - smoothstep(0.0, 2.25, depth);
+  float fresnel = pow(1.0 - clamp(surfaceNormal.z, 0.0, 1.0), 2.2);
+  float directional = pow(max(dot(surfaceNormal, normalize(vec3(-0.42, -0.62, 0.66))), 0.0), 18.0);
+  float innerDepth = bevelMask * (0.045 + 0.04 * max(dot(outwardNormal, normalize(vec2(0.55, 0.84))), 0.0));
+  color *= 1.0 - innerDepth;
   color = mix(color, u_tint, u_tintOpacity);
-  color += vec3(fresnel * 0.045 + specular);
-  color -= vec3(max(dot(normal, normalize(vec2(0.55, 0.83))), 0.0) * lip * 0.025);
+  color += vec3(u_specular * (fresnel * 0.22 + directional * bevelMask * 0.18 + opticalLip * 0.08));
   outColor = vec4(color * alpha, alpha);
 }`;

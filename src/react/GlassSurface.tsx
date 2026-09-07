@@ -7,15 +7,19 @@ import { useGlassRenderer } from "./GlassProvider.js";
 export type GlassSurfaceProps = PropsWithChildren<HTMLAttributes<HTMLDivElement> & GlassSurfaceOptions>;
 
 export function GlassSurface({
-  children, borderRadius, refraction, blur, chromaticAberration, tint, tintOpacity, style, ...props
+  children, borderRadius, refraction, thickness, bevelWidth, ior, blur, specular,
+  chromaticAberration, tint, tintOpacity, style, ...props
 }: GlassSurfaceProps) {
   const ref = useRef<HTMLDivElement>(null);
   const renderer = useGlassRenderer();
 
   useEffect(() => {
     if (!renderer || !ref.current) return;
-    return renderer.add(ref.current, { borderRadius, refraction, blur, chromaticAberration, tint, tintOpacity });
-  }, [renderer, borderRadius, refraction, blur, chromaticAberration, tint, tintOpacity]);
+    return renderer.add(ref.current, {
+      borderRadius, refraction, thickness, bevelWidth, ior, blur, specular,
+      chromaticAberration, tint, tintOpacity,
+    });
+  }, [renderer, borderRadius, refraction, thickness, bevelWidth, ior, blur, specular, chromaticAberration, tint, tintOpacity]);
 
   return (
     <div

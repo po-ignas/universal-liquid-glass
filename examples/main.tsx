@@ -42,6 +42,14 @@ function Demo() {
           <div className="rings" aria-hidden="true"><i /><i /><i /><i /></div>
         </section>
         <section className="ticker" aria-label="Live changing content"><span>DOM UPDATE {pulse}</span><span>REFRACT · SCATTER · TRANSMIT ·</span></section>
+        <section id="optics-test" className="optics-test" aria-label="Physics optics visual test">
+          <div className="optics-test-art" aria-hidden="true">
+            <i className="horizontal horizontal-a" /><i className="horizontal horizontal-b" />
+            <i className="vertical vertical-a" /><i className="vertical vertical-b" />
+            <b /><span /><strong>THICK GLASS</strong>
+          </div>
+          <GlassSurface className="optics-test-glass" borderRadius={48} />
+        </section>
         <section id="work" className="grid">
           {cards.map(([title, a, b], index) => <article key={title} style={{ "--a": a, "--b": b } as CSSProperties}><span>0{index + 1}</span><h2>{title}</h2><p>Sharp rules and contrasting gradients make lens displacement easy to verify.</p></article>)}
         </section>
@@ -50,14 +58,18 @@ function Demo() {
           <GlassSurface
             className="glass-square"
             borderRadius={24}
-            refraction={0.8}
-            blur={18}
-            chromaticAberration={0.35}
+            refraction={1}
+            thickness={56}
+            bevelWidth={112}
+            ior={1.5}
+            blur={1.2}
+            specular={0.5}
+            chromaticAberration={0.08}
             tint="#ffffff"
-            tintOpacity={0.06}
+            tintOpacity={0.055}
           >
             <strong>GLASS</strong>
-            <span>0.8 refraction</span>
+            <span>56px thick · IOR 1.5</span>
           </GlassSurface>
         </section>
         <section id="details" className="statement"><p>PERFORMANCE FIRST</p><h2>When the page gets busy,<br />the glass gets cheaper.</h2><div className="steps"><span>HIGH</span><b>→</b><span>MEDIUM</span><b>→</b><span>LOW</span><b>→</b><span>CSS</span></div></section>

@@ -177,7 +177,7 @@ export class GlassRenderer {
         this.webglVersion = String(gl.getParameter(gl.VERSION));
         this.glProgram = program(gl);
         this.shaderStatus = "vertex compiled · fragment compiled · program linked";
-        this.uniformsFor("u_backdrop", "u_viewport", "u_sourceOffset", "u_sourceSize", "u_textureSize", "u_rect", "u_radius", "u_refraction", "u_blur", "u_chromatic", "u_tintOpacity", "u_tint", "u_sampleTier", "u_debugMode", "u_sourceReady");
+        this.uniformsFor("u_backdrop", "u_viewport", "u_sourceOffset", "u_sourceSize", "u_textureSize", "u_rect", "u_radius", "u_refraction", "u_thickness", "u_bevelWidth", "u_ior", "u_blur", "u_specular", "u_chromatic", "u_tintOpacity", "u_tint", "u_sampleTier", "u_debugMode", "u_sourceReady");
         this.vao = gl.createVertexArray();
         this.buffer = gl.createBuffer();
         this.texture = gl.createTexture();
@@ -726,7 +726,11 @@ export class GlassRenderer {
       gl.uniform4f(this.uniforms.get("u_rect") ?? null, rect.left, rect.top, rect.width, rect.height);
       gl.uniform1f(this.uniforms.get("u_radius") ?? null, Math.min(record.radius, rect.width / 2, rect.height / 2));
       gl.uniform1f(this.uniforms.get("u_refraction") ?? null, clamp(options.refraction, 0, 2));
+      gl.uniform1f(this.uniforms.get("u_thickness") ?? null, Math.max(0, options.thickness));
+      gl.uniform1f(this.uniforms.get("u_bevelWidth") ?? null, Math.max(1, options.bevelWidth));
+      gl.uniform1f(this.uniforms.get("u_ior") ?? null, clamp(options.ior, 1.001, 3));
       gl.uniform1f(this.uniforms.get("u_blur") ?? null, Math.max(0, options.blur));
+      gl.uniform1f(this.uniforms.get("u_specular") ?? null, clamp(options.specular, 0, 1));
       gl.uniform1f(this.uniforms.get("u_chromatic") ?? null, config.chromaticAberration ? clamp(options.chromaticAberration, 0, 1) : 0);
       gl.uniform3f(this.uniforms.get("u_tint") ?? null, ...record.tint);
       gl.uniform1f(this.uniforms.get("u_tintOpacity") ?? null, clamp(options.tintOpacity, 0, 1));

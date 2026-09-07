@@ -16,10 +16,18 @@ export interface GlassQualityConfig {
 export interface GlassSurfaceOptions {
   /** Rounded corner radius in CSS pixels. Defaults to the computed CSS radius. */
   borderRadius?: number;
-  /** Edge lens strength. 1 is the tuned navigation-surface default. */
+  /** Multiplier for the physically-derived lens displacement. */
   refraction?: number;
+  /** Virtual glass depth in CSS pixels. */
+  thickness?: number;
+  /** Width of the curved optical bevel in CSS pixels. */
+  bevelWidth?: number;
+  /** Index of refraction. Typical glass is approximately 1.45-1.55. */
+  ior?: number;
   /** Frost/scattering radius in CSS pixels. */
   blur?: number;
+  /** Directional rim/specular intensity, from 0 to 1. */
+  specular?: number;
   /** RGB separation at the refractive edge, from 0 to 1. */
   chromaticAberration?: number;
   /** CSS tint color. */
