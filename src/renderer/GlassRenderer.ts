@@ -3,6 +3,7 @@ import { adaptQuality } from "../performance/adaptiveQuality.js";
 import { mapBackdropSource, type BackdropSourceMapping, type BackdropSourceMetadata } from "../performance/backdropSource.js";
 import { CaptureScheduler } from "../performance/captureScheduler.js";
 import { summarizeFrameTimes } from "../performance/frameMetrics.js";
+import { rectCanAffectSurface } from "../performance/mutationRelevance.js";
 import { initialQuality, QUALITY_CONFIG } from "../performance/quality.js";
 import { TextureFreshness } from "../performance/textureFreshness.js";
 import type { GlassCapturePolicy, GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
@@ -377,9 +378,18 @@ export class GlassRenderer {
   private onMutation = (mutations: MutationRecord[]): void => {
     const relevant = mutations.some((mutation) => {
       if (isLibraryOwnedNode(mutation.target)) return false;
-      if (mutation.type !== "childList") return true;
-      const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
-      return changedNodes.length === 0 || changedNodes.some((node) => !isLibraryOwnedNode(node));
+      if (mutation.type === "childList") {
+        const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+        if (changedNodes.length > 0 && changedNodes.every(isLibraryOwnedNode)) return false;
+      }
+      const element = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+      if (!element) return true;
+      const surfaceRects = Array.from(this.surfaces.values(), ({ rect }) => rect);
+      const maximumSamplingMargin = Array.from(this.surfaces.values()).reduce(
+        (margin, { options }) => Math.max(margin, options.thickness * options.refraction + options.blur * 2),
+        0,
+      );
+      return rectCanAffectSurface(element.getBoundingClientRect(), surfaceRects, maximumSamplingMargin);
     });
     if (!relevant) return;
     this.layoutDirty = true;
