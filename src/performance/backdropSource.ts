@@ -9,6 +9,10 @@ export interface BackdropSourceMetadata {
   viewportHeight: number;
   overscanX: number;
   overscanY: number;
+  sourceLeft?: number;
+  sourceTop?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 export interface BackdropSourceView {
@@ -48,14 +52,18 @@ export function mapBackdropSource(
   const insideY = Math.abs(deltaY) <= source.overscanY;
   const valid = dimensionsMatch && contentMatches && insideX && insideY;
   const exact = valid && deltaX === 0 && deltaY === 0;
+  const sourceLeft = source.sourceLeft ?? 0;
+  const sourceTop = source.sourceTop ?? 0;
+  const sourceWidth = source.sourceWidth ?? source.viewportWidth;
+  const sourceHeight = source.sourceHeight ?? source.viewportHeight;
   return {
     state: exact ? "exact" : valid ? "scroll-compensated" : "invalid",
     deltaX,
     deltaY,
-    offsetX: source.overscanX + deltaX,
-    offsetY: source.overscanY + deltaY,
-    sourceWidth: source.viewportWidth + source.overscanX * 2,
-    sourceHeight: source.viewportHeight + source.overscanY * 2,
+    offsetX: source.overscanX - sourceLeft + deltaX,
+    offsetY: source.overscanY - sourceTop + deltaY,
+    sourceWidth: sourceWidth + source.overscanX * 2,
+    sourceHeight: sourceHeight + source.overscanY * 2,
     remainingX: Math.max(0, source.overscanX - Math.abs(deltaX)),
     remainingY: Math.max(0, source.overscanY - Math.abs(deltaY)),
   };

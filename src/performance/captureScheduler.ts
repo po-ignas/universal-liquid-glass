@@ -8,10 +8,9 @@ export interface CaptureSchedulerSnapshot {
 }
 
 /**
- * Coalesces renderer invalidations and enforces the interaction invariant:
- * a capture may begin only while idle or settling, never while scrolling or
- * resizing. Timers stay in GlassRenderer; transitions live here so the rules
- * can be regression-tested without a DOM.
+ * Coalesces renderer invalidations. Ordinary captures begin while idle or
+ * settling; explicit bounded replenishments may begin while scrolling. Timers
+ * stay in GlassRenderer so the transitions can be tested without a DOM.
  */
 export class CaptureScheduler {
   private interactionMode: GlassInteractionMode = "idle";
@@ -67,6 +66,13 @@ export class CaptureScheduler {
     this.captureInFlight = true;
     this.interactionMode = "refreshing";
     if (this.scrollGestureActive) this.capturesThisScrollGesture += 1;
+    return reason;
+  }
+
+  beginCaptureDuringScroll(reason: string): string | null {
+    if (this.captureInFlight || this.interactionMode !== "scrolling") return null;
+    this.captureInFlight = true;
+    this.capturesThisScrollGesture += 1;
     return reason;
   }
 

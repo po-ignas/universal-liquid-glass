@@ -68,6 +68,11 @@ export interface GlassMetrics {
   overscanY: number;
   overscanRemaining: number;
   textureUploadMs: number;
+  captureTraversalMs: number;
+  captureRasterMs: number;
+  bitmapPreparationMs: number;
+  captureRegion: "viewport" | "lens-local";
+  textureBytes: number;
   surfaceCount: number;
   textureWidth: number;
   textureHeight: number;

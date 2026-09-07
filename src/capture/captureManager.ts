@@ -1,5 +1,17 @@
 import html2canvas from "html2canvas-pro";
-import { planViewportCapture } from "./captureGeometry.js";
+import { planRegionCapture, planViewportCapture } from "./captureGeometry.js";
+
+export interface CaptureTimings {
+  traversalMs: number;
+  rasterMs: number;
+  preparationMs: number;
+}
+
+export interface ViewportCaptureResult {
+  canvas: HTMLCanvasElement;
+  bitmap: ImageBitmap | HTMLCanvasElement;
+  timings: CaptureTimings;
+}
 
 export interface ViewportCaptureOptions {
   root: HTMLElement;
@@ -11,6 +23,7 @@ export interface ViewportCaptureOptions {
   scrollY?: number;
   viewportWidth?: number;
   viewportHeight?: number;
+  region?: { left: number; top: number; width: number; height: number };
 }
 
 const PRESERVE_LAYOUT_ATTRIBUTE = "data-liquid-glass-capture-hidden";
@@ -34,19 +47,22 @@ function prepareLayoutPreservingExclusions(document: Document): () => void {
 export async function captureViewport({
   root, scale, ignore, overscanX = 0, overscanY = 0,
   scrollX = window.scrollX, scrollY = window.scrollY,
-  viewportWidth = window.innerWidth, viewportHeight = window.innerHeight,
-}: ViewportCaptureOptions): Promise<HTMLCanvasElement> {
+  viewportWidth = window.innerWidth, viewportHeight = window.innerHeight, region,
+}: ViewportCaptureOptions): Promise<ViewportCaptureResult> {
   // Capturing the document element gives html2canvas its dedicated document-
   // bounds path. Cropping an arbitrary provider element with document-space
   // x/y can yield an empty canvas once the page scrolls.
   const captureRoot = root.ownerDocument.documentElement;
-  const geometry = planViewportCapture({ scrollX, scrollY, viewportWidth, viewportHeight, overscanX, overscanY });
+  const geometry = region
+    ? planRegionCapture({ scrollX, scrollY, viewportWidth, viewportHeight, overscanX, overscanY, ...region })
+    : planViewportCapture({ scrollX, scrollY, viewportWidth, viewportHeight, overscanX, overscanY });
   // html2canvas normally removes data-html2canvas-ignore nodes from its clone.
   // Removing an in-flow header collapses the cloned layout and shifts every
   // source pixel above its live viewport coordinate. Keep those boxes in the
   // clone, but make their paint invisible instead.
   const restoreExclusions = prepareLayoutPreservingExclusions(root.ownerDocument);
   let capture: Promise<HTMLCanvasElement>;
+  const traversalStarted = performance.now();
   try {
     // DocumentCloner snapshots the tree synchronously when html2canvas is
     // called. Restore live attributes immediately instead of leaving the app
@@ -69,5 +85,11 @@ export async function captureViewport({
   } finally {
     restoreExclusions();
   }
-  return capture;
+  const traversalMs = performance.now() - traversalStarted;
+  const rasterStarted = performance.now();
+  const canvas = await capture;
+  const rasterMs = performance.now() - rasterStarted;
+  const preparationStarted = performance.now();
+  const bitmap = typeof createImageBitmap === "function" ? await createImageBitmap(canvas) : canvas;
+  return { canvas, bitmap, timings: { traversalMs, rasterMs, preparationMs: performance.now() - preparationStarted } };
 }

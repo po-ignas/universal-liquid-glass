@@ -16,6 +16,24 @@ test("continuous scrolling cannot start a DOM capture", () => {
   assert.equal(scheduler.snapshot.capturesThisScrollGesture, 0);
 });
 
+test("one explicit replenishment can run while preserving the settled refresh", () => {
+  const scheduler = new CaptureScheduler();
+  scheduler.beginScroll("scroll settled");
+
+  assert.equal(scheduler.beginCaptureDuringScroll("scroll replenishment"), "scroll replenishment");
+  assert.equal(scheduler.beginCaptureDuringScroll("duplicate"), null);
+  assert.deepEqual(scheduler.snapshot, {
+    interactionMode: "scrolling",
+    pendingCaptureReason: "scroll settled",
+    captureInFlight: true,
+    capturesThisScrollGesture: 1,
+  });
+
+  scheduler.finishCapture();
+  scheduler.settle();
+  assert.equal(scheduler.beginCapture(), "scroll settled");
+});
+
 test("one coalesced capture starts after a scroll settles", () => {
   const scheduler = new CaptureScheduler();
   scheduler.beginScroll("scroll settled");

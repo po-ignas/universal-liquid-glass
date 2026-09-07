@@ -52,6 +52,11 @@ export function DeliveryMarketFaqFixture() {
           <span className="delivery-faq-count">{active + 1}/{items.length}</span>
           <span className="delivery-faq-chevron" aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
         </button>
+        {!expanded ? (
+          <span className="delivery-faq-progress" aria-hidden="true">
+            <span key={active} />
+          </span>
+        ) : null}
         {expanded ? (
           <div className="delivery-faq-expanded">
             {items.map((item) => (

@@ -1,10 +1,12 @@
 import { captureViewport } from "../capture/captureManager.js";
+import { planVerticalOverscan } from "../capture/captureGeometry.js";
 import { adaptQuality } from "../performance/adaptiveQuality.js";
 import { mapBackdropSource, type BackdropSourceMapping, type BackdropSourceMetadata } from "../performance/backdropSource.js";
 import { CaptureScheduler } from "../performance/captureScheduler.js";
 import { summarizeFrameTimes } from "../performance/frameMetrics.js";
 import { rectCanAffectSurface } from "../performance/mutationRelevance.js";
 import { initialQuality, QUALITY_CONFIG } from "../performance/quality.js";
+import { decideSourceReplenishment } from "../performance/sourceReplenishment.js";
 import { TextureFreshness } from "../performance/textureFreshness.js";
 import type { GlassCapturePolicy, GlassDebugView, GlassMetrics, GlassQuality, GlassSurfaceOptions } from "../types.js";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders.js";
@@ -30,6 +32,8 @@ interface SurfaceRecord {
 const QUALITY_ORDER: GlassQuality[] = ["fallback", "low", "medium", "high"];
 const LIBRARY_OWNED_SELECTOR = "[data-liquid-glass-surface], [data-liquid-glass-renderer], [data-liquid-glass-debug]";
 const POC_OVERSCAN_VIEWPORTS = 3;
+const LENS_LOCAL_OVERSCAN_VIEWPORTS = 8;
+const MAX_SOURCE_PIXELS = 6_291_456;
 const MUTATION_OBSERVER_OPTIONS: MutationObserverInit = {
   subtree: true,
   childList: true,
@@ -139,6 +143,8 @@ export class GlassRenderer {
   private captureRetryGeneration = -1;
   private lastKnownScrollX = 0;
   private lastKnownScrollY = 0;
+  private lastScrollSampleAt = 0;
+  private scrollVelocityY = 0;
   private stressSamples = 0;
   private comfortableSamples = 0;
   private currentDpr = 1;
@@ -146,6 +152,10 @@ export class GlassRenderer {
   private contentGeneration = 0;
   private sourceMetadata: BackdropSourceMetadata | null = null;
   private textureUploadMs = 0;
+  private captureTraversalMs = 0;
+  private captureRasterMs = 0;
+  private bitmapPreparationMs = 0;
+  private captureRegion: "viewport" | "lens-local" = "lens-local";
   private loggedFirstCapture = false;
   private sourceReady = false;
   private debugView: GlassDebugView = "normal";
@@ -160,6 +170,7 @@ export class GlassRenderer {
 
   constructor(options: RendererOptions) {
     this.root = options.root;
+    this.captureRegion = document.documentElement.dataset.liquidGlassCapture === "viewport" ? "viewport" : "lens-local";
     this.maximumDpr = options.maxDpr ?? 2;
     this.mutationDebounceMs = options.mutationDebounceMs ?? 140;
     this.quality = options.initialQuality ?? initialQuality();
@@ -459,6 +470,13 @@ export class GlassRenderer {
     // html2canvas can emit scroll events while restoring clone state. Only a
     // real live-viewport position change starts or extends an interaction.
     if (scrollX === this.lastKnownScrollX && scrollY === this.lastKnownScrollY) return;
+    const now = performance.now();
+    if (this.lastScrollSampleAt > 0) {
+      const elapsed = Math.max(1, now - this.lastScrollSampleAt);
+      const instantaneous = Math.abs(scrollY - this.lastKnownScrollY) / elapsed;
+      this.scrollVelocityY = this.scrollVelocityY * 0.65 + instantaneous * 0.35;
+    }
+    this.lastScrollSampleAt = now;
     this.lastKnownScrollX = scrollX;
     this.lastKnownScrollY = scrollY;
     this.beginScrollInteraction("scroll settled");
@@ -495,6 +513,18 @@ export class GlassRenderer {
     clearTimeout(this.interactionSettleTimer);
     this.interactionSettleTimer = window.setTimeout(() => {
       this.interactionSettleTimer = 0;
+      const scheduling = this.captureScheduler.snapshot;
+      // DOM capture can delay compositor-driven scroll events long enough for
+      // the ordinary settle timer to fire mid-gesture. Keep the gesture open
+      // until the bounded replenishment finishes; otherwise a second settled
+      // capture starts immediately and the next scroll event appears to begin
+      // a new gesture.
+      if (scheduling.interactionMode === "scrolling" && scheduling.captureInFlight) {
+        this.restartInteractionSettleTimer(delayMs);
+        return;
+      }
+      this.lastScrollSampleAt = 0;
+      this.scrollVelocityY = 0;
       const wasResizing = this.captureScheduler.snapshot.interactionMode === "resizing";
       this.captureScheduler.settle();
       if (wasResizing) this.resizeCanvas();
@@ -600,25 +630,81 @@ export class GlassRenderer {
     });
   }
 
-  private captureOverscan(scale: number): { x: number; y: number } {
+  private captureOverscan(
+    scale: number,
+    region?: { left: number; top: number; width: number; height: number },
+  ): { x: number; y: number } {
     if (!this.gl || scale <= 0) return { x: 0, y: 0 };
-    const desiredY = window.innerHeight * POC_OVERSCAN_VIEWPORTS;
     const maxTextureSize = Number(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) || 4096;
-    const maxSourceHeight = maxTextureSize / scale;
     // Keep source storage below roughly 24 MiB while respecting the hardware
-    // texture limit. This is allocated per capture/texture, never per frame.
-    const widthPixels = Math.max(1, Math.ceil(window.innerWidth * scale));
-    const maxPixelsHeight = 6_291_456 / widthPixels;
-    const maxMemoryHeight = maxPixelsHeight / scale;
-    const maxHeight = Math.min(maxSourceHeight, maxMemoryHeight);
-    const boundedY = Math.max(0, (maxHeight - window.innerHeight) / 2);
-    return { x: 0, y: Math.floor(Math.min(desiredY, boundedY)) };
+    // texture limit. Lens-local planning uses the actual union width/height;
+    // calculating from the full viewport threw away most of the memory win and
+    // reduced a valid source to only 0.35 viewport of movement.
+    const y = planVerticalOverscan({
+      viewportHeight: window.innerHeight,
+      sourceWidth: region?.width ?? window.innerWidth,
+      sourceHeight: region?.height ?? window.innerHeight,
+      scale,
+      desiredViewportCount: this.captureRegion === "lens-local" ? LENS_LOCAL_OVERSCAN_VIEWPORTS : POC_OVERSCAN_VIEWPORTS,
+      maxTextureSize,
+      maxPixelCount: MAX_SOURCE_PIXELS,
+    });
+    return { x: 0, y };
+  }
+
+  private lensLocalRegion(): { left: number; top: number; width: number; height: number } | undefined {
+    if (this.captureRegion === "viewport") return undefined;
+    const visible = Array.from(this.surfaces.values()).filter(({ rect }) =>
+      rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth,
+    );
+    if (!visible.length) return undefined;
+    const guard = Math.ceil(visible.reduce((value, { options }) =>
+      Math.max(value, options.thickness * options.refraction + options.blur * 2), 0) + 8);
+    const left = Math.max(0, Math.floor(Math.min(...visible.map(({ rect }) => rect.left)) - guard));
+    const top = Math.max(0, Math.floor(Math.min(...visible.map(({ rect }) => rect.top)) - guard));
+    const right = Math.min(innerWidth, Math.ceil(Math.max(...visible.map(({ rect }) => rect.right)) + guard));
+    const bottom = Math.min(innerHeight, Math.ceil(Math.max(...visible.map(({ rect }) => rect.bottom)) + guard));
+    return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
   }
 
   private requestCapture(now: number): void {
     const state = this.captureScheduler.snapshot;
-    if (state.captureInFlight || !state.pendingCaptureReason) return;
-    if (state.interactionMode === "scrolling" || state.interactionMode === "resizing" || state.interactionMode === "refreshing") return;
+    if (state.captureInFlight) return;
+    let activeReplenishment = false;
+    if (state.interactionMode === "scrolling") {
+      if (this.captureRegion !== "lens-local") return;
+      const mapping = this.currentSourceMapping();
+      const decision = decideSourceReplenishment({
+        sourceState: mapping.state,
+        sourceReady: this.sourceReady,
+        captureInFlight: state.captureInFlight,
+        capturesThisScrollGesture: state.capturesThisScrollGesture,
+        captureMs: this.lastCaptureMs,
+        scrollVelocityY: this.scrollVelocityY,
+        remainingY: mapping.remainingY,
+        overscanY: this.sourceMetadata?.overscanY ?? 0,
+        viewportHeight: window.innerHeight,
+      });
+      if (decision === "recover") {
+        const invalidatedByContent = this.sourceMetadata?.contentGeneration !== this.contentGeneration;
+        this.lastInvalidation = invalidatedByContent
+          ? "temporary source invalidation; WebGL recovery queued"
+          : mapping.state === "invalid"
+            ? "temporary source exhaustion; WebGL recovery queued"
+            : `active capture limit reached; settled WebGL recovery queued (${this.lastCaptureMs.toFixed(1)} ms)`;
+        // Source exhaustion is recoverable, unlike WebGL initialization or
+        // context failure. Hide an invalid texture, keep the renderer alive,
+        // and replace it with an exact source as soon as scrolling settles.
+        if (mapping.state === "invalid") this.setInteractionPresentation(true);
+        this.queueCapture("settled WebGL recovery");
+        return;
+      }
+      if (decision !== "capture") return;
+      activeReplenishment = true;
+    } else {
+      if (!state.pendingCaptureReason) return;
+      if (state.interactionMode === "resizing" || state.interactionMode === "refreshing") return;
+    }
     const config = QUALITY_CONFIG[this.quality];
     const interval = config.minCaptureIntervalMs;
     const remaining = interval - (now - this.lastCaptureAt);
@@ -626,7 +712,9 @@ export class GlassRenderer {
       if (!this.captureTimer) this.captureTimer = window.setTimeout(() => { this.captureTimer = 0; this.scheduleFrame(); }, remaining);
       return;
     }
-    const reason = this.captureScheduler.beginCapture();
+    const reason = activeReplenishment
+      ? this.captureScheduler.beginCaptureDuringScroll("scroll replenishment")
+      : this.captureScheduler.beginCapture();
     if (!reason) return;
     const captureGeneration = this.textureFreshness.beginCapture();
     // Keep the capture stall in public frame diagnostics, but do not mistake
@@ -639,10 +727,10 @@ export class GlassRenderer {
     this.captureCount += 1;
     this.captureTimestamps.push(performance.now());
     this.publish(true);
-    void this.capture(captureGeneration);
+    void this.capture(captureGeneration, activeReplenishment);
   }
 
-  private async capture(captureGeneration: number): Promise<void> {
+  private async capture(captureGeneration: number, activeReplenishment = false): Promise<void> {
     if (!this.gl || !this.texture || this.quality === "fallback") return;
     const started = performance.now();
     let durationRecorded = false;
@@ -651,7 +739,9 @@ export class GlassRenderer {
     const previousSourceStatus = this.sourceStatus;
     const config = QUALITY_CONFIG[this.quality];
     const scale = config.captureScale;
-    const overscan = this.captureOverscan(scale);
+    if (this.layoutDirty) this.measureSurfaces();
+    const region = this.lensLocalRegion();
+    const overscan = this.captureOverscan(scale, region);
     const capturedViewport = {
       scrollX: window.scrollX, scrollY: window.scrollY,
       width: window.innerWidth, height: window.innerHeight,
@@ -666,6 +756,10 @@ export class GlassRenderer {
       viewportHeight: capturedViewport.height,
       overscanX: overscan.x,
       overscanY: overscan.y,
+      sourceLeft: region?.left ?? 0,
+      sourceTop: region?.top ?? 0,
+      sourceWidth: region?.width ?? capturedViewport.width,
+      sourceHeight: region?.height ?? capturedViewport.height,
     };
     this.currentCaptureScale = scale;
     try {
@@ -675,7 +769,7 @@ export class GlassRenderer {
       // Observation resumes immediately, so real app changes during the slow
       // raster still obsolete this generation through the normal safeguards.
       this.mutationObserver.disconnect();
-      let capturePromise: Promise<HTMLCanvasElement>;
+      let capturePromise: ReturnType<typeof captureViewport>;
       try {
         capturePromise = captureViewport({
           root: this.root,
@@ -687,12 +781,23 @@ export class GlassRenderer {
           scrollY: capturedViewport.scrollY,
           viewportWidth: capturedViewport.width,
           viewportHeight: capturedViewport.height,
+          region,
         });
       } finally {
         if (!this.destroyed) this.observeMutations();
       }
-      const result = await capturePromise;
-      if (this.destroyed) return;
+      const captureResult = await capturePromise;
+      const result = captureResult.canvas;
+      const closeBitmap = () => {
+        if (typeof ImageBitmap !== "undefined" && captureResult.bitmap instanceof ImageBitmap) captureResult.bitmap.close();
+      };
+      this.captureTraversalMs = captureResult.timings.traversalMs;
+      this.captureRasterMs = captureResult.timings.rasterMs;
+      this.bitmapPreparationMs = captureResult.timings.preparationMs;
+      if (this.destroyed) {
+        closeBitmap();
+        return;
+      }
       const duration = performance.now() - started;
       this.recordCaptureDuration(duration);
       durationRecorded = true;
@@ -706,6 +811,7 @@ export class GlassRenderer {
       });
       const captureStillActive = this.textureFreshness.snapshot.captureGeneration === captureGeneration;
       if (!captureStillActive || candidateMapping.state === "invalid") {
+        closeBitmap();
         const currentGeneration = this.textureFreshness.snapshot.viewportGeneration;
         this.sourceStatus = `discarded unusable capture generation ${captureGeneration}; current ${currentGeneration}`;
         if (candidateMapping.state === "invalid") this.queueCapture("capture moved beyond overscan");
@@ -715,6 +821,7 @@ export class GlassRenderer {
       const probe = this.probeSource(result);
       this.sourceStatus = probe.message;
       if (!probe.valid) {
+        closeBitmap();
         this.sourceReady = previousSourceReady;
         this.sourceStatus = previousSourceStatus;
         this.lastRenderError = `Backdrop capture is empty: ${probe.message}`;
@@ -730,11 +837,12 @@ export class GlassRenderer {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       if (result.width === this.textureWidth && result.height === this.textureHeight) {
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, result);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, captureResult.bitmap);
       } else {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, result);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, captureResult.bitmap);
         this.textureWidth = result.width; this.textureHeight = result.height;
       }
+      closeBitmap();
       const uploadError = gl.getError();
       this.textureUploadMs = performance.now() - uploadStarted;
       if (uploadError !== gl.NO_ERROR) {
@@ -777,6 +885,11 @@ export class GlassRenderer {
       if (!durationRecorded) this.recordCaptureDuration(performance.now() - started);
       this.textureFreshness.finishCapture(captureGeneration);
       this.captureScheduler.finishCapture();
+      if (activeReplenishment && this.captureScheduler.snapshot.interactionMode === "scrolling") {
+        // Give compositor scrolling a full quiet window after main-thread DOM
+        // capture returns before deciding the gesture really ended.
+        this.restartInteractionSettleTimer(140);
+      }
       // The next rAF interval may straddle the tail of html2canvas even though
       // captureInFlight is false by the time it is observed.
       this.skipNextQualityFrame = true;
@@ -874,7 +987,10 @@ export class GlassRenderer {
 
   private degrade(): void {
     const index = QUALITY_ORDER.indexOf(this.quality);
-    this.setQuality(QUALITY_ORDER[Math.max(0, index - 1)]);
+    // A failed capture may reduce shader cost, but it must not directly destroy
+    // a healthy WebGL session. The measured frame-pressure path separately
+    // retains its sustained-safety downgrade.
+    this.setQuality(QUALITY_ORDER[Math.max(1, index - 1)]);
   }
 
   private setQuality(next: GlassQuality): void {
@@ -971,6 +1087,9 @@ export class GlassRenderer {
       scrollDeltaX: mapping.deltaX, scrollDeltaY: mapping.deltaY,
       overscanX: this.sourceMetadata?.overscanX ?? 0, overscanY: this.sourceMetadata?.overscanY ?? 0,
       overscanRemaining: mapping.remainingY, textureUploadMs: this.textureUploadMs,
+      captureTraversalMs: this.captureTraversalMs, captureRasterMs: this.captureRasterMs,
+      bitmapPreparationMs: this.bitmapPreparationMs, captureRegion: this.captureRegion,
+      textureBytes: this.textureWidth * this.textureHeight * 4,
       surfaceCount: this.surfaces.size,
       textureWidth: this.textureWidth, textureHeight: this.textureHeight,
       canvasWidth: this.canvas.width, canvasHeight: this.canvas.height, dpr: this.currentDpr,

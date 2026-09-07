@@ -1,7 +1,6 @@
 import { StrictMode, useEffect, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import { GlassProvider, GlassSurface, useGlassRenderer, type GlassDebugView } from "../src/index.js";
-import { DeliveryMarketFaqFixture } from "./DeliveryMarketFaqFixture.js";
 import "./demo.css";
 
 const cards = [
@@ -12,9 +11,11 @@ const cards = [
 
 function Demo() {
   const parameters = new URLSearchParams(location.search);
+  document.documentElement.dataset.liquidGlassCapture = parameters.get("capture") === "viewport" ? "viewport" : "lens-local";
   const [debug, setDebug] = useState(parameters.has("debug"));
   const stress = parameters.has("stress");
   const forceFallback = parameters.has("fallback");
+  const localPort = location.port || "default";
   const [pulse, setPulse] = useState(0);
   useEffect(() => {
     if (!stress) return;
@@ -37,13 +38,17 @@ function Demo() {
 
       <main id="top">
         <section className="hero">
+          <aside className="experiment-identity" aria-label="Active experiment">
+            <span>EXPERIMENT</span>
+            <strong>mvp/lens-local-capture</strong>
+            <code>localhost:{localPort}</code>
+          </aside>
           <p className="eyebrow">One renderer · ordinary React DOM</p>
           <h1>Glass that actually<br /><em>bends the page.</em></h1>
           <p className="lede">Scroll the typography and color boundaries beneath the navigation. The curved edge shifts them optically instead of merely blurring them.</p>
           <div className="rings" aria-hidden="true"><i /><i /><i /><i /></div>
         </section>
         <section className="ticker" aria-label="Live changing content"><span>DOM UPDATE {pulse}</span><span>REFRACT · SCATTER · TRANSMIT ·</span></section>
-        <DeliveryMarketFaqFixture />
         <section id="optics-test" className="optics-test" aria-label="Physics optics visual test">
           <div className="optics-test-art" aria-hidden="true">
             <i className="horizontal horizontal-a" /><i className="horizontal horizontal-b" />

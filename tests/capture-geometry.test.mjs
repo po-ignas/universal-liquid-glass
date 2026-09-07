@@ -1,6 +1,52 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planViewportCapture } from "../dist/capture/captureGeometry.js";
+import { planRegionCapture, planVerticalOverscan, planViewportCapture } from "../dist/capture/captureGeometry.js";
+
+test("lens-local overscan spends the bounded pixel budget on source lifetime", () => {
+  assert.equal(planVerticalOverscan({
+    viewportHeight: 720,
+    sourceWidth: 978,
+    sourceHeight: 148,
+    scale: 0.75,
+    desiredViewportCount: 3.25,
+    maxTextureSize: 4096,
+    maxPixelCount: 6_291_456,
+  }), 2340);
+});
+
+test("lens-local overscan remains bounded by texture height for a taller surface union", () => {
+  assert.equal(planVerticalOverscan({
+    viewportHeight: 720,
+    sourceWidth: 978,
+    sourceHeight: 569,
+    scale: 0.75,
+    desiredViewportCount: 3.5,
+    maxTextureSize: 4096,
+    maxPixelCount: 6_291_456,
+  }), 2446);
+});
+
+test("lens-local capture translates viewport bounds into document crop coordinates", () => {
+  assert.deepEqual(planRegionCapture({
+    scrollX: 10, scrollY: 500, viewportWidth: 1200, viewportHeight: 800,
+    left: 100, top: 20, width: 800, height: 100, overscanX: 12, overscanY: 80,
+  }), {
+    x: 98, y: 440, width: 824, height: 260,
+    scrollX: 0, scrollY: 0, windowWidth: 1200, windowHeight: 800,
+  });
+});
+
+test("source mapping accounts for a lens-local crop origin", () => {
+  const mapping = mapBackdropSource({
+    captureGeneration: 1, contentGeneration: 1, captureScrollX: 0, captureScrollY: 500,
+    viewportWidth: 1200, viewportHeight: 800, overscanX: 12, overscanY: 80,
+    sourceLeft: 100, sourceTop: 20, sourceWidth: 800, sourceHeight: 100,
+  }, { contentGeneration: 1, scrollX: 0, scrollY: 500, viewportWidth: 1200, viewportHeight: 800 });
+  assert.equal(mapping.offsetX, -88);
+  assert.equal(mapping.offsetY, 60);
+  assert.equal(mapping.sourceWidth, 824);
+  assert.equal(mapping.sourceHeight, 260);
+});
 import { mapBackdropSource } from "../dist/performance/backdropSource.js";
 
 test("overscan texture coordinates map back to the captured document viewport", () => {
@@ -9,7 +55,7 @@ test("overscan texture coordinates map back to the captured document viewport", 
   });
   assert.deepEqual(geometry, {
     x: 0, y: -2032, width: 390, height: 5908,
-    scrollX: 0, scrollY: 500, windowWidth: 390, windowHeight: 844,
+    scrollX: 0, scrollY: 0, windowWidth: 390, windowHeight: 844,
   });
 
   const mapping = mapBackdropSource({
