@@ -92,6 +92,17 @@ Measured frame pressure controls shader quality. Capture duration controls captu
 
 The runtime contains no browser-specific SVG-filter refraction. That avoids Chromium-only `backdrop-filter: url(...)` behavior.
 
+### Experimental SVG live-DOM provider
+
+The `poc/svg-live-dom` branch also exports `SvgLiveDomProvider`. It maintains
+one inert, accessibility-hidden DOM mirror, filters one viewport-sized layer
+with SVG displacement, and clips that layer to all visible `GlassSurface`
+rectangles. This path performs no screenshot capture or application-managed
+texture upload and is intended only for explicit integration testing. It
+trades capture latency for duplicated DOM/layout work and has documented
+limitations around ID-based CSS, media/canvas, portals, and fixed descendants;
+it is not the default WebGL renderer.
+
 ## Known limitations
 
 - DOM rasterization is not a browser compositor API. Video frames, WebGL/canvas content, cross-origin images without CORS, iframes, complex filters, and some advanced CSS may be absent or stale in snapshots.

@@ -1,5 +1,6 @@
 export { GlassProvider, useGlassRenderer } from "./react/GlassProvider.js";
 export { GlassSurface } from "./react/GlassSurface.js";
+export { SvgLiveDomProvider, type SvgLiveDomProviderProps } from "./react/SvgLiveDomProvider.js";
 export { GlassRenderer } from "./renderer/GlassRenderer.js";
 export { QUALITY_CONFIG, initialQuality, webgl2Available } from "./performance/quality.js";
 export { adaptQuality } from "./performance/adaptiveQuality.js";

@@ -100,3 +100,21 @@ The standardized fixture is correct and fast, but the technique does not solve t
 Advance to real Delivery Market test: **NO**.
 
 The controlled result is sufficient to establish both feasibility for explicitly owned/duplicated content and failure as a general fixed-glass backdrop architecture. Per the evaluation stop rule, further integration or optimization is not justified.
+
+## 10. Follow-up implementation (2026-09-08)
+
+At the user's direction, the branch was advanced beyond the original stop rule
+for an opt-in Delivery Market trial. `SvgLiveDomProvider` now clones the live
+provider DOM once rather than mounting a second React tree, incrementally
+synchronizes mutations and form state, strips duplicate identity/accessibility
+references, and uses one viewport-sized filtered layer clipped across all
+visible glass surfaces.
+
+On the local Delivery Market page, its initial mirror of 2,319 nodes took
+41.7–63.9 ms across observed reloads. A mobile repeated-scroll sample reported
+0.45 ms average mirror alignment/surface-measurement work, no rebuilds, and two
+correctly detected header/footer surfaces. The dynamic mobile FAQ sheet also
+opened and closed without recursive mirroring or console errors. These results
+remove the second-React-tree/state-duplication blocker for this integration,
+but they do not remove the browser-level duplicate DOM/layout, media, portal,
+ID-selector, or cross-browser limitations recorded above.

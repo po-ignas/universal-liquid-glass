@@ -1,100 +1,67 @@
-import { StrictMode, useEffect, useState, type CSSProperties } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { GlassProvider, GlassSurface, useGlassRenderer, type GlassDebugView } from "../src/index.js";
+import { GlassSurface, SvgLiveDomProvider } from "../src/index.js";
+import { DeliveryMarketFaqFixture, deliveryFaqItemCount } from "./DeliveryMarketFaqFixture.js";
 import "./demo.css";
 
-const cards = [
-  ["Cobalt tide", "#2459ff", "#9ec5ff"], ["Citrus field", "#ffb000", "#fff1a8"],
-  ["Violet bloom", "#8c43ff", "#e0bbff"], ["Coral signal", "#ff556b", "#ffc0a5"],
-  ["Forest light", "#0c9f75", "#9af0c9"], ["Night current", "#182444", "#7898ff"],
-];
-
-function Demo() {
-  const parameters = new URLSearchParams(location.search);
-  const [debug, setDebug] = useState(parameters.has("debug"));
-  const stress = parameters.has("stress");
-  const forceFallback = parameters.has("fallback");
-  const [pulse, setPulse] = useState(0);
-  useEffect(() => {
-    if (!stress) return;
-    const timer = window.setInterval(() => setPulse((value) => value + 1), 2400);
-    return () => clearInterval(timer);
-  }, [stress]);
-  return (
-    <GlassProvider debug={debug} initialQuality={forceFallback ? "fallback" : undefined} className="scene">
-      {debug ? <PipelineControls stress={stress} onMutate={() => setPulse((value) => value + 1)} /> : null}
-      <div className="ambient ambient-a" /><div className="ambient ambient-b" />
-      <GlassSurface className="desktop-nav" borderRadius={26}>
-        <a className="brand" href="#top">ULG</a>
-        <nav aria-label="Primary"><a href="#work">Optics</a><a href="#details">Runtime</a><a href="#support">Support</a></nav>
-        <button onClick={() => setDebug((value) => !value)}>{debug ? "Hide metrics" : "Show metrics"}</button>
-      </GlassSurface>
-      <GlassSurface className="mobile-nav" borderRadius={23}><span className="brand">ULG</span><button aria-label="Open menu">Menu</button></GlassSurface>
-      <GlassSurface className="mobile-footer" borderRadius={28}>
-        <a href="#top">Home</a><a href="#work">Optics</a><a href="#details">Speed</a>
-      </GlassSurface>
-
-      <main id="top">
-        <section className="hero">
-          <p className="eyebrow">One renderer · ordinary React DOM</p>
-          <h1>Glass that actually<br /><em>bends the page.</em></h1>
-          <p className="lede">Scroll the typography and color boundaries beneath the navigation. The curved edge shifts them optically instead of merely blurring them.</p>
-          <div className="rings" aria-hidden="true"><i /><i /><i /><i /></div>
-        </section>
-        <section className="ticker" aria-label="Live changing content"><span>DOM UPDATE {pulse}</span><span>REFRACT · SCATTER · TRANSMIT ·</span></section>
-        <section id="optics-test" className="optics-test" aria-label="Physics optics visual test">
-          <div className="optics-test-art" aria-hidden="true">
-            <i className="horizontal horizontal-a" /><i className="horizontal horizontal-b" />
-            <i className="vertical vertical-a" /><i className="vertical vertical-b" />
-            <b /><span /><strong>THICK GLASS</strong>
-          </div>
-          <GlassSurface className="optics-test-glass" borderRadius={48} />
-        </section>
-        <section id="work" className="grid">
-          {cards.map(([title, a, b], index) => <article key={title} style={{ "--a": a, "--b": b } as CSSProperties}><span>0{index + 1}</span><h2>{title}</h2><p>Sharp rules and contrasting gradients make lens displacement easy to verify.</p></article>)}
-        </section>
-        <section className="glass-square-stage" aria-label="Square glass surface demonstration">
-          <div className="glass-square-art" aria-hidden="true"><i /><i /><i /></div>
-          <GlassSurface
-            className="glass-square"
-            borderRadius={24}
-            refraction={1}
-            thickness={56}
-            bevelWidth={112}
-            ior={1.5}
-            blur={1.2}
-            specular={0.5}
-            chromaticAberration={0.08}
-            tint="#ffffff"
-            tintOpacity={0.055}
-          >
-            <strong>GLASS</strong>
-            <span>56px thick · IOR 1.5</span>
-          </GlassSurface>
-        </section>
-        <section id="details" className="statement"><p>PERFORMANCE FIRST</p><h2>When the page gets busy,<br />the glass gets cheaper.</h2><div className="steps"><span>HIGH</span><b>→</b><span>MEDIUM</span><b>→</b><span>LOW</span><b>→</b><span>CSS</span></div></section>
-        <section id="support" className="bands"><div>CHROMIUM</div><div>SAFARI</div><div>FIREFOX</div></section>
-      </main>
-    </GlassProvider>
-  );
+function ExperimentContent({ active, expanded, onToggle }: { active: number; expanded: boolean; onToggle: () => void }) {
+  return <main className="experiment-content">
+    <section className="experiment-hero">
+      <p>EXPERIMENT · poc/svg-live-dom</p>
+      <h1>Can the browser<br /><em>bend living DOM?</em></h1>
+      <div className="branch-banner">ONE MIRROR · TWO SURFACES · ZERO CAPTURES</div>
+      <DeliveryMarketFaqFixture active={active} expanded={expanded} onToggle={onToggle} />
+      <div className="test-rings" aria-hidden="true"><i /><i /><i /><i /></div>
+    </section>
+    <section className="stripe-field" aria-hidden="true"><strong>SCROLL THROUGH THE LENS</strong></section>
+    <section className="finish-field" aria-hidden="true"><span>NO SCREENSHOT</span><span>NO WEBGL</span><span>LIVE SUBTREE</span></section>
+  </main>;
 }
 
-function PipelineControls({ stress, onMutate }: { stress: boolean; onMutate: () => void }) {
-  const renderer = useGlassRenderer();
-  const [view, setView] = useState<GlassDebugView>("normal");
-  useEffect(() => renderer?.setDebugView(view), [renderer, view]);
-  return (
-    <aside data-liquid-glass-debug className="pipeline-controls">
-      <strong>Backdrop pipeline</strong>
-      {(["sample", "exaggerated", "edge-mask", "normal"] as GlassDebugView[]).map((mode) => (
-        <button key={mode} aria-pressed={view === mode} onClick={() => setView(mode)}>{mode}</button>
-      ))}
-      <button onClick={() => window.scrollBy({ top: window.innerHeight * 1.75, behavior: "smooth" })}>POC scroll down</button>
-      <button onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>POC scroll top</button>
-      <button onClick={onMutate}>mutate page</button>
-      {stress ? <span>stress on</span> : null}
+function DemoNavigation() {
+  return <>
+    <header data-html2canvas-ignore="true" className="demo-site-header">
+      <GlassSurface aria-hidden="true" borderRadius={26} className="demo-glass-presentation" />
+      <strong>CARVA</strong>
+      <nav aria-label="Demo navigation"><a href="#live">Live DOM</a><a href="#faq">FAQ</a><button type="button">Menu</button></nav>
+    </header>
+    <nav data-html2canvas-ignore="true" aria-label="Demo mobile navigation" className="demo-mobile-footer">
+      <GlassSurface aria-hidden="true" borderRadius={24} className="demo-glass-presentation" />
+      <button type="button">Home</button><button type="button">Routes</button><button type="button">FAQ</button><button type="button">More</button>
+    </nav>
+  </>;
+}
+
+function Demo() {
+  const [active, setActive] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [displacement, setDisplacement] = useState(34);
+  const [blur, setBlur] = useState(1.2);
+  const [frost, setFrost] = useState(16);
+
+  useEffect(() => {
+    if (expanded || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(() => setActive((value) => (value + 1) % deliveryFaqItemCount), 4000);
+    return () => window.clearInterval(timer);
+  }, [expanded]);
+
+  return <SvgLiveDomProvider
+    debug
+    className="svg-poc"
+    displacement={displacement}
+    blur={blur}
+    tint={`rgba(255,255,255,${frost / 100})`}
+  >
+    <DemoNavigation />
+    <aside data-svg-live-ignore="" className="poc-note"><strong>poc/svg-live-dom</strong><span>shared viewport mirror</span><span>Timer: {active + 1}/{deliveryFaqItemCount} · FAQ {expanded ? "open" : "closed"}</span></aside>
+    <aside data-svg-live-ignore="" className="poc-controls" aria-label="Glass effect controls">
+      <strong>Glass parameters</strong>
+      <label><span>Strength <b>{displacement}px</b></span><input type="range" min="0" max="100" value={displacement} onChange={(event) => setDisplacement(Number(event.target.value))} /></label>
+      <label><span>Blur <b>{blur.toFixed(1)}px</b></span><input type="range" min="0" max="6" step="0.1" value={blur} onChange={(event) => setBlur(Number(event.target.value))} /></label>
+      <label><span>Tint <b>{frost}%</b></span><input type="range" min="0" max="60" value={frost} onChange={(event) => setFrost(Number(event.target.value))} /></label>
     </aside>
-  );
+    <ExperimentContent active={active} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
+  </SvgLiveDomProvider>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><Demo /></StrictMode>);
