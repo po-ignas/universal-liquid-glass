@@ -378,6 +378,12 @@ export class GlassRenderer {
   }
 
   private onMutation = (mutations: MutationRecord[]): void => {
+    const batchAdditions = mutations.flatMap((mutation) => mutation.type === "childList"
+      ? [...mutation.addedNodes].flatMap((node) => {
+        const element = node instanceof Element ? node : node.parentElement;
+        return element ? [element] : [];
+      })
+      : []);
     const relevant = mutations.some((mutation) => {
       if (isLibraryOwnedNode(mutation.target)) return false;
       if (mutation.type === "attributes" && mutation.target instanceof Element) {
@@ -397,8 +403,8 @@ export class GlassRenderer {
         // React commonly replaces one animated cosmetic node with another.
         // The connected replacement gives us a tighter affected box than the
         // broad parent and avoids treating animation restarts as page relayout.
-        affectedElements = addedElements.length > 0
-          ? addedElements
+        affectedElements = (addedElements.length > 0 || batchAdditions.length > 0)
+          ? (addedElements.length > 0 ? addedElements : batchAdditions)
           : mutation.target instanceof Element ? [mutation.target] : mutation.target.parentElement ? [mutation.target.parentElement] : [];
       } else {
         const element = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
@@ -536,7 +542,10 @@ export class GlassRenderer {
       this.frameTimes.push(this.lastFrameMs);
       if (this.frameTimes.length > 120) this.frameTimes.shift();
       if (this.skipNextQualityFrame) this.skipNextQualityFrame = false;
-      else {
+      else if (this.captureScheduler.snapshot.captureInFlight) {
+        // Capture work remains in public diagnostics above, but is not a
+        // sample of the renderer's ability to sustain WebGL frames.
+      } else {
         this.qualityFrameTimes.push(this.lastFrameMs);
         if (this.qualityFrameTimes.length > 120) this.qualityFrameTimes.shift();
       }
@@ -613,6 +622,7 @@ export class GlassRenderer {
     // html2canvas main-thread time for shader draw pressure. Slow capture is
     // governed by capturePolicy; WebGL quality adapts from render frames.
     this.skipNextQualityFrame = true;
+    this.qualityFrameTimes = [];
     this.lastCaptureAt = now;
     this.lastInvalidation = reason;
     this.captureCount += 1;
@@ -744,6 +754,9 @@ export class GlassRenderer {
       if (!durationRecorded) this.recordCaptureDuration(performance.now() - started);
       this.textureFreshness.finishCapture(captureGeneration);
       this.captureScheduler.finishCapture();
+      // The next rAF interval may straddle the tail of html2canvas even though
+      // captureInFlight is false by the time it is observed.
+      this.skipNextQualityFrame = true;
       this.updatePresentation();
       if (!captureSucceeded) this.scheduleCaptureRetry(captureGeneration);
       this.publish(true);
