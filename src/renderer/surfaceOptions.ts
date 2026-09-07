@@ -11,6 +11,7 @@ export const DEFAULT_SURFACE_OPTIONS: Required<GlassSurfaceOptions> = {
   chromaticAberration: 0.08,
   tint: "#ffffff",
   tintOpacity: 0.055,
+  flushEdges: "auto",
 };
 
 /** Preserve renderer defaults when React forwards an omitted prop as undefined. */
@@ -26,5 +27,6 @@ export function resolveSurfaceOptions(options: GlassSurfaceOptions = {}): Requir
     chromaticAberration: options.chromaticAberration ?? DEFAULT_SURFACE_OPTIONS.chromaticAberration,
     tint: options.tint ?? DEFAULT_SURFACE_OPTIONS.tint,
     tintOpacity: options.tintOpacity ?? DEFAULT_SURFACE_OPTIONS.tintOpacity,
+    flushEdges: options.flushEdges ?? DEFAULT_SURFACE_OPTIONS.flushEdges,
   };
 }

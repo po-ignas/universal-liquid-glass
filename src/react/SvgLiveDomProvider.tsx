@@ -22,6 +22,16 @@ interface SurfaceRect {
   width: number;
   height: number;
   radius: number;
+  bevelWidth: number;
+  refraction: number;
+  blur: number;
+  specular: number;
+  tint: string;
+  tintOpacity: number;
+  flushTop: boolean;
+  flushRight: boolean;
+  flushBottom: boolean;
+  flushLeft: boolean;
 }
 
 export interface SvgLiveDomProviderProps extends PropsWithChildren<Omit<HTMLAttributes<HTMLDivElement>, "children">> {
@@ -76,7 +86,30 @@ function roundedBoxDistance(x: number, y: number, halfWidth: number, halfHeight:
   return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius;
 }
 
-function createLensDisplacementMap(rects: SurfaceRect[], viewportWidth: number, viewportHeight: number): string {
+function numericData(element: HTMLElement, key: string, fallback: number): number {
+  const parsed = Number.parseFloat(element.dataset[key] ?? "");
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveFlushEdges(element: HTMLElement, rect: DOMRect, radius: number): Pick<SurfaceRect, "flushTop" | "flushRight" | "flushBottom" | "flushLeft"> {
+  const setting = element.dataset.liquidGlassFlushEdges ?? "auto";
+  if (setting === "all") return { flushTop: true, flushRight: true, flushBottom: true, flushLeft: true };
+  if (setting === "none") return { flushTop: false, flushRight: false, flushBottom: false, flushLeft: false };
+  if (setting !== "auto") {
+    const edges = new Set(setting.split(","));
+    return { flushTop: edges.has("top"), flushRight: edges.has("right"), flushBottom: edges.has("bottom"), flushLeft: edges.has("left") };
+  }
+  const rectangular = radius <= 0.5;
+  const tolerance = 1;
+  return {
+    flushTop: rectangular && rect.top <= tolerance,
+    flushRight: rectangular && rect.right >= window.innerWidth - tolerance,
+    flushBottom: rectangular && rect.bottom >= window.innerHeight - tolerance,
+    flushLeft: rectangular && rect.left <= tolerance,
+  };
+}
+
+function createLensDisplacementMap(rects: SurfaceRect[], viewportWidth: number, viewportHeight: number, displacementStrength: number): string {
   const resolutionScale = Math.min(1, 1200 / Math.max(viewportWidth, viewportHeight));
   const width = Math.max(1, Math.round(viewportWidth * resolutionScale));
   const height = Math.max(1, Math.round(viewportHeight * resolutionScale));
@@ -106,7 +139,7 @@ function createLensDisplacementMap(rects: SurfaceRect[], viewportWidth: number, 
     const right = Math.min(width, Math.ceil((rect.x + rect.width) * resolutionScale));
     const top = Math.max(0, Math.floor(rect.y * resolutionScale));
     const bottom = Math.min(height, Math.ceil((rect.y + rect.height) * resolutionScale));
-    const bevel = Math.max(1, Math.min(112, Math.min(rect.width, rect.height) / 2 - 1));
+    const bevel = Math.max(1, Math.min(rect.bevelWidth, Math.min(rect.width, rect.height) / 2 - 1));
     for (let py = top; py < bottom; py += 1) {
       for (let px = left; px < right; px += 1) {
         const x = (px + 0.5) / resolutionScale;
@@ -123,11 +156,16 @@ function createLensDisplacementMap(rects: SurfaceRect[], viewportWidth: number, 
         const gradientX = distanceAt(rect, x + epsilon, y) - distanceAt(rect, x - epsilon, y);
         const gradientY = distanceAt(rect, x, y + epsilon) - distanceAt(rect, x, y - epsilon);
         const gradientLength = Math.hypot(gradientX, gradientY) || 1;
-        const normalX = gradientX / gradientLength;
-        const normalY = gradientY / gradientLength;
+        let normalX = gradientX / gradientLength;
+        let normalY = gradientY / gradientLength;
+        if ((rect.flushLeft && normalX < 0) || (rect.flushRight && normalX > 0)) normalX = 0;
+        if ((rect.flushTop && normalY < 0) || (rect.flushBottom && normalY > 0)) normalY = 0;
+        const maximumSampleOffset = Math.max(1, displacementStrength * 0.4 * Math.max(0, rect.refraction));
+        const safeX = Math.min(1, x / maximumSampleOffset, (viewportWidth - x) / maximumSampleOffset);
+        const safeY = Math.min(1, y / maximumSampleOffset, (viewportHeight - y) / maximumSampleOffset);
         const pixelOffset = (py * width + px) * 4;
-        pixels.data[pixelOffset] = Math.round(128 + normalX * response * 127);
-        pixels.data[pixelOffset + 2] = Math.round(128 + normalY * response * 127);
+        pixels.data[pixelOffset] = Math.round(128 + normalX * response * rect.refraction * Math.max(0, safeX) * 127);
+        pixels.data[pixelOffset + 2] = Math.round(128 + normalY * response * rect.refraction * Math.max(0, safeY) * 127);
       }
     }
   }
@@ -282,7 +320,23 @@ export function SvgLiveDomProvider({
         const computed = getComputedStyle(element);
         if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight || computed.display === "none" || computed.visibility === "hidden") return [];
         const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius);
-        return [{ x: rect.left, y: rect.top, width: rect.width, height: rect.height, radius: Number.isFinite(parsedRadius) ? parsedRadius : 0 }];
+        const radius = Number.isFinite(parsedRadius) ? parsedRadius : 0;
+        const automaticBevel = Math.max(1, Math.min(24, Math.min(rect.width, rect.height) * 0.28));
+        const flush = resolveFlushEdges(element, rect, radius);
+        return [{
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+          radius,
+          bevelWidth: numericData(element, "liquidGlassBevelWidth", automaticBevel),
+          refraction: numericData(element, "liquidGlassRefraction", 1),
+          blur: numericData(element, "liquidGlassBlur", blur),
+          specular: numericData(element, "liquidGlassSpecular", 0.42),
+          tint: element.dataset.liquidGlassTint ?? tint,
+          tintOpacity: numericData(element, "liquidGlassTintOpacity", 0.055),
+          ...flush,
+        }];
       });
       setSurfaces((current) => current.length === next.length && current.every((rect, index) => {
         const candidate = next[index];
@@ -290,7 +344,17 @@ export function SvgLiveDomProvider({
           && Math.abs(rect.y - candidate.y) < 0.25
           && Math.abs(rect.width - candidate.width) < 0.25
           && Math.abs(rect.height - candidate.height) < 0.25
-          && Math.abs(rect.radius - candidate.radius) < 0.25;
+          && Math.abs(rect.radius - candidate.radius) < 0.25
+          && Math.abs(rect.bevelWidth - candidate.bevelWidth) < 0.25
+          && Math.abs(rect.refraction - candidate.refraction) < 0.001
+          && Math.abs(rect.blur - candidate.blur) < 0.001
+          && Math.abs(rect.specular - candidate.specular) < 0.001
+          && rect.tint === candidate.tint
+          && Math.abs(rect.tintOpacity - candidate.tintOpacity) < 0.001
+          && rect.flushTop === candidate.flushTop
+          && rect.flushRight === candidate.flushRight
+          && rect.flushBottom === candidate.flushBottom
+          && rect.flushLeft === candidate.flushLeft;
       }) ? current : next);
       for (const element of source.querySelectorAll<HTMLElement>(SURFACE_SELECTOR)) surfaceObserver?.observe(element);
     };
@@ -513,9 +577,9 @@ export function SvgLiveDomProvider({
 
   useLayoutEffect(() => {
     if (diagnostics.cloneCount === 0) return;
-    setLensMapUrl(createLensDisplacementMap(surfaces, window.innerWidth, window.innerHeight));
+    setLensMapUrl(createLensDisplacementMap(surfaces, window.innerWidth, window.innerHeight, displacement));
     setGeometryReady(true);
-  }, [diagnostics.cloneCount, surfaces]);
+  }, [diagnostics.cloneCount, displacement, surfaces]);
 
   useEffect(() => {
     if (!geometryReady || diagnostics.cloneCount === 0 || glassReady) return;
@@ -545,6 +609,7 @@ export function SvgLiveDomProvider({
   }, [glassReady, loadingOverlay]);
 
   const clipPath = surfaces.map(roundedRectPath).join(" ");
+  const effectiveBlur = surfaces.reduce((maximum, surface) => Math.max(maximum, surface.blur), blur);
   const layerStyle: CSSProperties = {
     position: "fixed",
     inset: 0,
@@ -562,7 +627,7 @@ export function SvgLiveDomProvider({
           {lensMapUrl
             ? <><feImage href={lensMapUrl} x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="lensMap" /><feDisplacementMap in="SourceGraphic" in2="lensMap" scale={displacement * 0.8} xChannelSelector="R" yChannelSelector="B" result="warped" /></>
             : <feGaussianBlur in="SourceGraphic" stdDeviation={0.01} result="warped" />}
-          <feGaussianBlur in="warped" stdDeviation={blur} result="softened" />
+          <feGaussianBlur in="warped" stdDeviation={effectiveBlur} result="softened" />
           <feColorMatrix in="softened" type="saturate" values="1.06" />
         </filter>
       </defs>
@@ -571,18 +636,28 @@ export function SvgLiveDomProvider({
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", contain: "strict", filter: `url(#${filterId})` }}>
         <div ref={mirrorHostRef} style={{ position: "absolute", inset: 0, width: "100vw", willChange: "transform" }} />
       </div>
-      <div style={{ position: "absolute", inset: 0, background: tint, boxShadow: "inset 0 1px rgba(255,255,255,.72)" }} />
-      {surfaces.map((rect, index) => <div key={index} style={{
+      {surfaces.map((rect, index) => {
+        const highlightAlpha = Math.min(0.95, 0.28 + rect.specular * 0.9);
+        const shadowAlpha = Math.min(0.3, 0.04 + rect.specular * 0.2);
+        const backgrounds = [
+          !rect.flushTop ? `linear-gradient(to bottom,rgba(255,255,255,${highlightAlpha}) 0,rgba(255,255,255,0) 2px)` : "",
+          !rect.flushBottom ? `linear-gradient(to top,rgba(32,49,78,${shadowAlpha}) 0,rgba(32,49,78,0) 2px)` : "",
+          `linear-gradient(145deg,rgba(255,255,255,${rect.specular * 0.16}),rgba(255,255,255,0) 44%,rgba(74,94,130,.035))`,
+          `color-mix(in srgb, ${rect.tint} ${Math.max(0, Math.min(1, rect.tintOpacity)) * 100}%, transparent)`,
+        ].filter(Boolean).join(",");
+        return <div key={index} style={{
         position: "absolute",
         left: rect.x,
         top: rect.y,
         width: rect.width,
         height: rect.height,
         borderRadius: rect.radius,
-        border: "1px solid rgba(255,255,255,.66)",
-        background: "linear-gradient(145deg,rgba(255,255,255,.11),rgba(255,255,255,0) 44%,rgba(74,94,130,.035))",
-        boxShadow: "inset 0 1px 1px rgba(255,255,255,.82), inset 0 -1px 2px rgba(34,52,82,.13)",
-      }} />)}
+        borderStyle: "solid",
+        borderColor: `rgba(255,255,255,${Math.min(0.82, 0.28 + rect.specular * 0.9)})`,
+        borderWidth: `${rect.flushTop ? 0 : 1}px ${rect.flushRight ? 0 : 1}px ${rect.flushBottom ? 0 : 1}px ${rect.flushLeft ? 0 : 1}px`,
+        background: backgrounds,
+      }} />;
+      })}
     </div>
     {overlayVisible && loadingOverlay && <div
       data-svg-live-loading=""

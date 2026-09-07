@@ -14,12 +14,19 @@ test("omitted React props do not overwrite optical defaults with undefined", () 
     chromaticAberration: undefined,
     tint: undefined,
     tintOpacity: undefined,
+    flushEdges: undefined,
   });
 
   assert.deepEqual(resolved, { ...DEFAULT_SURFACE_OPTIONS, borderRadius: 26 });
   for (const value of [resolved.refraction, resolved.thickness, resolved.bevelWidth, resolved.ior, resolved.blur, resolved.specular, resolved.chromaticAberration, resolved.tintOpacity]) {
     assert.equal(Number.isFinite(value), true);
   }
+});
+
+test("flush edge treatment defaults to auto and preserves explicit masks", () => {
+  assert.equal(resolveSurfaceOptions().flushEdges, "auto");
+  assert.deepEqual(resolveSurfaceOptions({ flushEdges: { top: true, left: true } }).flushEdges, { top: true, left: true });
+  assert.equal(resolveSurfaceOptions({ flushEdges: false }).flushEdges, false);
 });
 
 test("explicit optical settings still override defaults", () => {

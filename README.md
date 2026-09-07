@@ -110,6 +110,15 @@ edge bevel, and directional rim highlights. Consumers may pass a
 `loadingOverlay`; it remains visible until the mirror, lens geometry, fonts,
 and two paint frames are ready, plus the optional `minimumLoadingMs`.
 
+`GlassSurface` also accepts `flushEdges`. The default, `"auto"`, suppresses
+border, rim, bevel displacement, and out-of-viewport sampling on any viewport-
+touching edge of a rectangular surface. Pass `false` to retain every treated
+edge, `true` to suppress all edges, or an object such as
+`{ top: true, left: true }` for an explicit per-edge mask. The SVG path reads
+each surface's `refraction`, `bevelWidth`, `blur`, `specular`, `tint`, and
+`tintOpacity`; automatic bevels on short bars are capped independently of the
+WebGL material default.
+
 ## Known limitations
 
 - DOM rasterization is not a browser compositor API. Video frames, WebGL/canvas content, cross-origin images without CORS, iframes, complex filters, and some advanced CSS may be absent or stale in snapshots.

@@ -4,6 +4,8 @@ export type GlassQuality = "high" | "medium" | "low" | "fallback";
 export type GlassInteractionMode = "idle" | "scrolling" | "resizing" | "settling" | "refreshing";
 export type GlassCapturePolicy = "dynamic" | "occasional" | "idle-only" | "strict-idle-only";
 export type GlassBackdropSourceState = "exact" | "scroll-compensated" | "invalid";
+export type GlassEdge = "top" | "right" | "bottom" | "left";
+export type GlassFlushEdges = boolean | "auto" | Partial<Record<GlassEdge, boolean>>;
 
 export interface GlassQualityConfig {
   captureScale: number;
@@ -34,6 +36,8 @@ export interface GlassSurfaceOptions {
   tint?: string;
   /** Tint mix, from 0 to 1. */
   tintOpacity?: number;
+  /** Suppress optical treatment on viewport-flush edges. Defaults to automatic detection for rectangular surfaces. */
+  flushEdges?: GlassFlushEdges;
 }
 
 export interface GlassMetrics {

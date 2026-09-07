@@ -62,6 +62,13 @@ use 1.4 px scattering, a 5.5% white tint, a directional rim, and edge-focused
 refraction. An optional readiness overlay waits for the first mirror, lens map,
 font readiness, and two paint frames instead of relying on a fixed guess.
 
+Rectangular surfaces now default to `flushEdges="auto"`. Viewport-touching
+edges have no border, highlight, bevel displacement, or unsafe outside sample;
+internal edges retain the full material. Explicit boolean or per-edge
+`flushEdges` values override detection. The SVG geometry also consumes the
+existing per-surface bevel, refraction, blur, specular, tint, and tint-opacity
+properties, with a smaller automatic bevel cap for short navigation bars.
+
 Delivery Market was exercised locally in Chromium with its real page tree:
 
 - 2,319 mirrored nodes;
