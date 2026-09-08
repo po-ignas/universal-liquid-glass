@@ -116,8 +116,8 @@ touching edge of a rectangular surface. Pass `false` to retain every treated
 edge, `true` to suppress all edges, or an object such as
 `{ top: true, left: true }` for an explicit per-edge mask. The SVG path reads
 each surface's `refraction`, `bevelWidth`, `blur`, `specular`, `tint`, and
-`tintOpacity`; automatic bevels on short bars are capped independently of the
-WebGL material default.
+`tintOpacity`; automatic bevels use up to 46% of a short bar's depth and are
+capped at 42 CSS pixels independently of the WebGL material default.
 
 ## Known limitations
 

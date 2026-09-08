@@ -321,7 +321,11 @@ export function SvgLiveDomProvider({
         if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight || computed.display === "none" || computed.visibility === "hidden") return [];
         const parsedRadius = Number.parseFloat(computed.borderTopLeftRadius);
         const radius = Number.isFinite(parsedRadius) ? parsedRadius : 0;
-        const automaticBevel = Math.max(1, Math.min(24, Math.min(rect.width, rect.height) * 0.28));
+        // Let short navigation bars use most of their available depth for the
+        // optical shoulder. The previous 28% / 24px profile confined visible
+        // warping to a narrow rim; 46% keeps a small stable centre while making
+        // the refraction legible across substantially more of the surface.
+        const automaticBevel = Math.max(1, Math.min(42, Math.min(rect.width, rect.height) * 0.46));
         const flush = resolveFlushEdges(element, rect, radius);
         return [{
           x: rect.left,
