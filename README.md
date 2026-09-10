@@ -1,3 +1,7 @@
+# DISCLOSURE: THIS DOESN"T WORK. IT WAS A NICE ATTEMPT, LOTS OF TESTING AND TOKENS, BUT PRACTICALLY THE TUNNEL IS TOO LONG AND HEAVY, UNLESS YOU RE-RENDER YOUR APPLICATION AND PROCESS IT WITH SVG GPU (DON'T KNOW IF THIS MAKES SENSE). OTHERWISE, IT COULD BE SOLVED, BUT BROWSERS DON'T GIVE PIXEL INFO. THEREFORE, TO TAKE SCREENSHOTS AND RUN IT THROUGH WEBGL IS TOO SLOW 400MS OR SO... SO AT THIS POINT I'M ABANDONING THIS IDEA.
+
+
+
 # Universal Liquid Glass
 
 A small React/Next.js library that renders visibly refractive, Apple-like glass over ordinary DOM content. It is optimized for a few high-value navigation surfaces: desktop headers, mobile headers, and fixed mobile navigation.
